@@ -1,3 +1,18 @@
+Version 2.9.7 - December 7, 2012
+
+- Set pool probed to true on successful authorisation with stratum to avoid it
+being pinged later with pool_getswork.
+- Allow pool active to be called on stratum or disabled pools in the watchpool
+thread if the pool has not been probed.
+- Remove unused variable.
+- Use a variable length string array in submit_upstream_work to cope with
+massive GBT submissions.
+- Remove unused getwork times in getswork.
+- Don't show broken WU value with scrypt mining.
+- The specification for stratum has been elaborated to say that a changed diff
+applies only to new work so do not retarget when submitting shares.
+
+
 Version 2.9.6 - December 2, 2012
 
 - Make gen_stratum_work more robust by using a dynamically allocated array for
