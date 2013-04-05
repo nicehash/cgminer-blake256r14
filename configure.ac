@@ -209,14 +209,6 @@ fi
 AM_CONDITIONAL([HAS_SCRYPT], [test x$scrypt = xyes])
 
 bflsc="no"
-
-AC_ARG_ENABLE([bflsc],
-	[AC_HELP_STRING([--enable-bflsc],[Compile support for BFL ASICs (default disabled)])],
-	[bflsc=$enableval]
-	)
-if test "x$bflsc" = xyes; then
-	AC_DEFINE([USE_BFLSC], [1], [Defined to 1 if BFL ASIC support is wanted])
-fi
 AM_CONDITIONAL([HAS_BFLSC], [test x$bflsc = xyes])
 
 bitforce="no"
@@ -525,12 +517,6 @@ else
 fi
 
 echo
-if test "x$bflsc" = xyes; then
-	echo "  BFL.ASICs............: Enabled"
-else
-	echo "  BFL.ASICs............: Disabled"
-fi
-
 if test "x$bitforce" = xyes; then
 	echo "  BitForce.FPGAs.......: Enabled"
 else
