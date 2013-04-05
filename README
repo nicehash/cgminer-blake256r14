@@ -1,4 +1,4 @@
-This is a multi-threaded multi-pool GPU, FPGA and ASIC miner with ATI GPU
+This is a multi-threaded multi-pool GPU and FPGA miner with ATI GPU
 monitoring, (over)clocking and fanspeed support for bitcoin and derivative
 coins. Do not use on multiple block chains at the same time!
 
@@ -294,12 +294,12 @@ SCRYPT only options:
 See SCRYPT-README for more information regarding litecoin mining.
 
 
-ASIC and FPGA mining boards (BFL ASIC, BitForce, Icarus, ModMiner, Ztex)
+FPGA mining boards (BitForce, Icarus, ModMiner, Ztex)
 only options:
 
-Cgminer will automatically find all of your BFL ASIC, BitForce FPGAs,
+Cgminer will automatically find all of your BitForce FPGAs,
 ModMiner FPGAs or Ztex FPGAs
-The --usb option can restrict how many BFL ASIC, BitForce FPGAs or
+The --usb option can restrict how many BitForce FPGAs or
 ModMiner FPGAs it finds:
 
   --usb 1:2,1:3,1:4,1:*
