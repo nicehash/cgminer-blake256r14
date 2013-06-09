@@ -217,8 +217,12 @@ static inline int fsync (int fd)
 #define semtimedop(SEM, SOPS, VAL, TIMEOUT) semop(SEM, SOPS, VAL)
 #endif
 
+#ifndef MIN
 #define MIN(x, y)	((x) > (y) ? (y) : (x))
+#endif
+#ifndef MAX
 #define MAX(x, y)	((x) > (y) ? (x) : (y))
+#endif
 
 enum drv_driver {
 	DRIVER_OPENCL = 0,
