@@ -579,10 +579,11 @@ char *get_proxy(char *url, struct pool *pool)
 /* Returns a malloced array string of a binary value of arbitrary length. The
  * array is rounded up to a 4 byte size to appease architectures that need
  * aligned array  sizes */
+static char hex[16] = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
 char *bin2hex(const unsigned char *p, size_t len)
 {
 	ssize_t slen;
-	char *s;
+	char *s, *sr;
 	int i;
 
 	slen = len * 2 + 1;
@@ -592,40 +593,57 @@ char *bin2hex(const unsigned char *p, size_t len)
 	if (unlikely(!s))
 		quithere(1, "Failed to calloc");
 
-	for (i = 0; i < (int)len; i++)
-		sprintf(s + (i * 2), "%02x", (unsigned int)p[i]);
+	for (i = 0, sr = s; i < len; ++i) {
+		*sr++ = hex[p[i] >> 4];
+		*sr++ = hex[p[i] & 0xF];
+	}
 
 	return s;
 }
 
 /* Does the reverse of bin2hex but does not allocate any ram */
+static int hex2bin_tbl[256] = {
+	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	 0,  1,  2,  3,  4,  5,  6,  7,  8,  9, -1, -1, -1, -1, -1, -1,
+	-1, 10, 11, 12, 13, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	-1, 10, 11, 12, 13, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+};
 bool hex2bin(unsigned char *p, const char *hexstr, size_t len)
 {
+	int nibble1, nibble2;
+	unsigned char idx;
 	bool ret = false;
 
 	while (*hexstr && len) {
-		char hex_byte[4];
-		unsigned int v;
-
 		if (unlikely(!hexstr[1])) {
 			applog(LOG_ERR, "hex2bin str truncated");
 			return ret;
 		}
 
-		memset(hex_byte, 0, 4);
-		hex_byte[0] = hexstr[0];
-		hex_byte[1] = hexstr[1];
+		idx = *hexstr++;
+		nibble1 = hex2bin_tbl[idx];
+		idx = *hexstr++;
+		nibble2 = hex2bin_tbl[idx];
 
-		if (unlikely(sscanf(hex_byte, "%x", &v) != 1)) {
-			applog(LOG_INFO, "hex2bin sscanf '%s' failed", hex_byte);
+		if (unlikely((nibble1 < 0) || (nibble2 < 0))) {
+			applog(LOG_ERR, "hex2bin scan failed");
 			return ret;
 		}
 
-		*p = (unsigned char) v;
-
-		p++;
-		hexstr += 2;
-		len--;
+		*p++ = (((unsigned char)nibble1) << 4) | ((unsigned char)nibble2);
+		--len;
 	}
 
 	if (likely(len == 0 && *hexstr == 0))
