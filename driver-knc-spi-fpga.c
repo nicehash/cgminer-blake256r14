@@ -302,7 +302,7 @@ static int64_t knc_process_response(struct thr_info *thr, struct cgpu_info *cgpu
 	struct knc_state *knc = cgpu->knc_state;
 	struct work *work;
 	int64_t us;
-	int works, submitted, completed, i, idx;
+	int works, submitted, completed, i, num_sent;
 	int next_read_q, next_read_a;
 	struct timeval now;
 	
@@ -360,9 +360,20 @@ static int64_t knc_process_response(struct thr_info *thr, struct cgpu_info *cgpu
 		++completed;
 	}
 #else
+	if (knc->write_q > knc->read_q)
+		num_sent = knc->write_q - knc->read_q - 1;
+	else
+		num_sent =
+			knc->write_q + KNC_QUEUED_BUFFER_SIZE - knc->read_q - 1;
 	/* Actually process SPI response */
-	applog(LOG_DEBUG, "KnC spi: response, accepted %u, full %u",
-	       rxbuf->works_accepted, rxbuf->response_queue_full);
+	if (rxbuf->works_accepted) {
+		applog(LOG_DEBUG, "KnC spi: raw response %08X %08X",
+		       ((uint32_t *)rxbuf)[0], ((uint32_t *)rxbuf)[1]);
+		applog(LOG_DEBUG,
+		       "KnC spi: response, accepted %u (from %u), full %u",
+		       rxbuf->works_accepted, num_sent,
+		       rxbuf->response_queue_full);
+	}
 	/* move works_accepted number of items from queued_fifo to active_fifo */
 	submitted = 0;
 	for (i = 0; i < rxbuf->works_accepted; ++i) {
@@ -391,6 +402,14 @@ static int64_t knc_process_response(struct thr_info *thr, struct cgpu_info *cgpu
 		     (rxbuf->responses[i].type != RESPONSE_TYPE_WORK_DONE)
 		   )
 			continue;
+		applog(LOG_DEBUG, "KnC spi: raw response %08X %08X",
+		       ((uint32_t *)&rxbuf->responses[i])[0],
+		       ((uint32_t *)&rxbuf->responses[i])[1]);
+		applog(LOG_DEBUG, "KnC spi: response, T:%u A:%u Q:%u W:%u",
+		       rxbuf->responses[i].type,
+		       rxbuf->responses[i].asic,
+		       rxbuf->responses[i].queue_id,
+		       rxbuf->responses[i].work_id);
 		/* Find active work with matching ID */
 		next_read_a = knc->read_a;
 		knc_active_fifo_inc_idx(knc, &next_read_a);
@@ -402,6 +421,8 @@ static int64_t knc_process_response(struct thr_info *thr, struct cgpu_info *cgpu
 		}
 		if (next_read_a == knc->write_a)
 			continue;
+		applog(LOG_DEBUG, "KnC spi: response work %u found",
+		       rxbuf->responses[i].work_id);
 		work = knc->active_fifo[next_read_a].work;
 		
 		if (rxbuf->responses[i].type == RESPONSE_TYPE_NONCE_FOUND) {
