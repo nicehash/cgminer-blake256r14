@@ -138,6 +138,10 @@ struct knc_state {
 #define KNC_ACTIVE_BUFFER_SIZE	(MAX_ACTIVE_WORKS + 1)
 	struct active_work active_fifo[KNC_ACTIVE_BUFFER_SIZE];
 
+#ifdef ENABLE_PROFILING
+	struct timeval last_stats;
+#endif
+
 #ifdef ENABLE_BENCHMARK
 	struct timeval lastscan;
 	struct timeval jupiter_work_start[KNC_ACTIVE_BUFFER_SIZE];
@@ -299,6 +303,10 @@ static void knc_work_from_queue_to_spi(struct knc_state *knc,
 		buf_to[i] = le32toh(buf_from[3 - i - 1]);
 }
 
+#ifdef ENABLE_PROFILING
+extern unsigned long long _tm_total, _tm_merkle, _tm_count, _tm_txns;
+#endif
+
 static int64_t knc_process_response(struct thr_info *thr, struct cgpu_info *cgpu,
 				    struct spi_rx_t *rxbuf, int num)
 {
@@ -310,7 +318,7 @@ static int64_t knc_process_response(struct thr_info *thr, struct cgpu_info *cgpu
 	struct timeval now;
 	
 #ifdef ENABLE_BENCHMARK
-#define HASH_RATE		900
+#define HASH_RATE		9000
 #define WORK_PER_SECOND		(HASH_RATE * 1000 / 4295 + 2)	 /* 1GH/core, 2^32 H/work item (4.295...GH) */
 	gettimeofday(&now, NULL);
 	us = timediff(&now, &knc->lastscan);
@@ -463,6 +471,25 @@ static int64_t knc_process_response(struct thr_info *thr, struct cgpu_info *cgpu
 			       sizeof(struct active_work));
 		knc->active_fifo[knc->read_a].work = NULL;
 		++completed;
+	}
+#endif
+
+#ifdef ENABLE_PROFILING
+	struct timeval last_stats;
+	gettimeofday(&now, NULL);
+	us = timediff(&now, &knc->last_stats);
+	if (us < 0) {
+		knc->last_stats = now;
+	} else if (us >= 10000000) {
+		if (_tm_count == 0)
+			_tm_count = -1;
+		applog(LOG_ERR, "KnC: stats T: %llu, M: %llu, W/s: %lld, TR: %llu",
+		       (_tm_total / _tm_count) / 1000,
+		       (_tm_merkle / _tm_count) / 1000,
+		       (long long)_tm_count / 10,
+			_tm_txns);
+		_tm_total = _tm_merkle = _tm_count = 0;
+		knc->last_stats = now;
 	}
 #endif
 
