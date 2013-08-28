@@ -32,6 +32,8 @@
 #define WORK_MIDSTATE_WORDS	8
 #define WORK_DATA_WORDS		3
 
+#define WORK_STALE_US		5000000
+
 struct spidev_context {
 	int fd;
 	uint32_t speed;
@@ -114,6 +116,7 @@ struct device_drv knc_drv;
 struct active_work {
 	struct work *work;
 	uint32_t work_id;
+	struct timeval begin;
 };
 
 struct knc_state {
@@ -375,6 +378,7 @@ static int64_t knc_process_response(struct thr_info *thr, struct cgpu_info *cgpu
 		       rxbuf->response_queue_full);
 	}
 	/* move works_accepted number of items from queued_fifo to active_fifo */
+	gettimeofday(&now, NULL);
 	submitted = 0;
 	for (i = 0; i < rxbuf->works_accepted; ++i) {
 		next_read_q = knc->read_q;
@@ -384,6 +388,7 @@ static int64_t knc_process_response(struct thr_info *thr, struct cgpu_info *cgpu
 		memcpy(&knc->active_fifo[knc->write_a],
 		       &knc->queued_fifo[next_read_q],
 		       sizeof(struct active_work));
+		knc->active_fifo[knc->write_a].begin = now;
 		knc->queued_fifo[next_read_q].work = NULL;
 		knc->read_q = next_read_q;
 		knc_active_fifo_inc_idx(knc, &knc->write_a);
@@ -395,6 +400,7 @@ static int64_t knc_process_response(struct thr_info *thr, struct cgpu_info *cgpu
 		       rxbuf->works_accepted, submitted);
 
 	/* check for completed works and calculated nonces */
+	gettimeofday(&now, NULL);
 	completed = 0;
 	for (i = 0; i < MAX_RESPONSES_IN_BATCH; ++i)
 	{
@@ -417,6 +423,22 @@ static int64_t knc_process_response(struct thr_info *thr, struct cgpu_info *cgpu
 			if (knc->active_fifo[next_read_a].work_id ==
 			    rxbuf->responses[i].work_id)
 				break;
+
+			/* check for stale works */
+			us = timediff(&now,
+				      &knc->active_fifo[next_read_a].begin);
+			if ((us < 0) || (us >= WORK_STALE_US)) {
+				applog(LOG_DEBUG, "KnC spi: remove stale work");
+				work = knc->active_fifo[next_read_a].work;
+				knc_active_fifo_inc_idx(knc, &knc->read_a);
+				work_completed(cgpu, work);
+				if (next_read_a != knc->read_a)
+					memcpy(&(knc->active_fifo[next_read_a]),
+					       &(knc->active_fifo[knc->read_a]),
+					       sizeof(struct active_work));
+				knc->active_fifo[knc->read_a].work = NULL;
+			}
+
 			knc_active_fifo_inc_idx(knc, &next_read_a);
 		}
 		if (next_read_a == knc->write_a)
