@@ -66,6 +66,10 @@ if NEED_USBUTILS_C
 cgminer_SOURCES += usbutils.c
 endif
 
+if HAS_KNC
+cgminer_SOURCES += driver-knc-spi-fpga.c
+endif
+
 if HAS_BFLSC
 cgminer_SOURCES += driver-bflsc.c driver-bflsc.h
 endif

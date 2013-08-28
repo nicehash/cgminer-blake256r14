@@ -1422,6 +1422,9 @@ extern const char *opt_argv0;
 static char *opt_verusage_and_exit(const char *extra)
 {
 	printf("%s\nBuilt with "
+#ifdef USE_KNC
+		"KnC "
+#endif
 #ifdef USE_AVALON
 		"avalon "
 #endif
@@ -7076,6 +7079,10 @@ void enable_curses(void) {
 }
 #endif
 
+#ifdef USE_KNC
+extern struct device_drv knc_drv;
+#endif
+
 #ifdef USE_BFLSC
 extern struct device_drv bflsc_drv;
 #endif
@@ -7605,6 +7612,11 @@ int main(int argc, char *argv[])
 #ifdef USE_ICARUS
 	if (!opt_scrypt)
 		icarus_drv.drv_detect();
+#endif
+
+#ifdef USE_KNC
+	if (!opt_scrypt)
+		knc_drv.drv_detect();
 #endif
 
 #ifdef USE_BFLSC
