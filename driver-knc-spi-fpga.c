@@ -47,7 +47,7 @@ struct spi_request {
 #define	CMD_GET_VERSION	1
 #define	CMD_SUBMIT_WORK	2
 #define	CMD_FLUSH_QUEUE	3
-	
+
 #define	WORK_ID_MASK	0x7FFF
 
 #if (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
@@ -316,7 +316,7 @@ static int64_t knc_process_response(struct thr_info *thr, struct cgpu_info *cgpu
 	int works, submitted, completed, i, num_sent;
 	int next_read_q, next_read_a;
 	struct timeval now;
-	
+
 #ifdef ENABLE_BENCHMARK
 #define HASH_RATE		9000
 #define WORK_PER_SECOND		(HASH_RATE * 1000 / 4295 + 2)	 /* 1GH/core, 2^32 H/work item (4.295...GH) */
@@ -325,7 +325,7 @@ static int64_t knc_process_response(struct thr_info *thr, struct cgpu_info *cgpu
 	if (us < 0) {
 		knc->lastscan = now;
 		return 0;
-	} 
+	}
 	works = ((us * WORK_PER_SECOND) / 1000000);
 
 	assert(sizeof(knc->queued_fifo[0]) == sizeof(knc->active_fifo[0]));
@@ -352,7 +352,7 @@ static int64_t knc_process_response(struct thr_info *thr, struct cgpu_info *cgpu
 		diff.tv_usec = us - (works * 1000000) / WORK_PER_SECOND;
 		timersub(&now, &diff, &knc->lastscan);
 	}
-	
+
 	/* check for completed works */
 	completed = 0;
 	next_read_a = knc->read_a;
@@ -454,7 +454,7 @@ static int64_t knc_process_response(struct thr_info *thr, struct cgpu_info *cgpu
 		applog(LOG_DEBUG, "KnC spi: response work %u found",
 		       rxbuf->responses[i].work_id);
 		work = knc->active_fifo[next_read_a].work;
-		
+
 		if (rxbuf->responses[i].type == RESPONSE_TYPE_NONCE_FOUND) {
 			if (NULL != thr)
 				submit_nonce(thr, work,
@@ -462,7 +462,7 @@ static int64_t knc_process_response(struct thr_info *thr, struct cgpu_info *cgpu
 			continue;
 		}
 
-		/* Work completed */		
+		/* Work completed */
 		knc_active_fifo_inc_idx(knc, &knc->read_a);
 		work_completed(cgpu, work);
 		if (next_read_a != knc->read_a)
@@ -494,6 +494,22 @@ static int64_t knc_process_response(struct thr_info *thr, struct cgpu_info *cgpu
 #endif
 
 	return ((uint64_t)completed) * 0x100000000UL;
+}
+
+/* Send flush command via SPI */
+static int _internal_knc_flush_fpga(struct knc_state *knc)
+{
+	int len;
+
+	spi_txbuf[0].cmd = CMD_FLUSH_QUEUE;
+	spi_txbuf[0].queue_id = 0; /* at the moment we have one and only queue #0 */
+	len = spi_transfer(knc->ctx, (uint8_t *)spi_txbuf,
+			   (uint8_t *)&spi_rxbuf, sizeof(struct spi_request));
+	if (len != sizeof(struct spi_request))
+		return -1;
+	len /= sizeof(struct spi_response);
+
+	return len;
 }
 
 static bool knc_selftest(struct spidev_context *ctx, int devices)
@@ -542,6 +558,8 @@ static bool knc_detect_one(struct spidev_context *ctx)
 #ifdef ENABLE_BENCHMARK
 	gettimeofday(&knc->lastscan, NULL);
 #endif
+
+	_internal_knc_flush_fpga(knc);
 
 	knc_selftest(ctx, devices);
 
@@ -673,17 +691,10 @@ static void knc_flush_work(struct cgpu_info *cgpu)
 		knc->read_a = next_read_a;
 		knc_active_fifo_inc_idx(knc, &next_read_a);
 	}
-	
-	/* Send flush command via SPI */
-	spi_txbuf[0].cmd = CMD_FLUSH_QUEUE;
-	spi_txbuf[0].queue_id = 0; /* at the moment we have one and only queue #0 */
-	len = spi_transfer(knc->ctx, (uint8_t *)spi_txbuf,
-			   (uint8_t *)&spi_rxbuf, sizeof(struct spi_request));
-	if (len != sizeof(struct spi_request))
-		return;
-	len /= sizeof(struct spi_response);
 
-	knc_process_response(NULL, cgpu, &spi_rxbuf, len);
+	len = _internal_knc_flush_fpga(knc);
+	if (len > 0)
+		knc_process_response(NULL, cgpu, &spi_rxbuf, len);
 }
 
 struct device_drv knc_drv = {
