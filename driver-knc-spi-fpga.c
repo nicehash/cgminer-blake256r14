@@ -81,6 +81,7 @@ struct spi_response {
 	uint32_t type		:2;
 #endif
 	uint32_t nonce;
+	uint32_t core;
 };
 
 #define MAX_REQUESTS_IN_BATCH	( MAX_BYTES_IN_SPI_XSFER /	\
@@ -89,7 +90,7 @@ struct spi_response {
 
 static struct spi_request spi_txbuf[MAX_REQUESTS_IN_BATCH];
 
-#define MAX_RESPONSES_IN_BATCH	( (sizeof(spi_txbuf) - 8) /	\
+#define MAX_RESPONSES_IN_BATCH	( (sizeof(spi_txbuf) - 12) /	\
 				   sizeof(struct spi_response)	\
 				)
 
@@ -108,6 +109,7 @@ struct spi_rx_t {
 	uint32_t works_accepted		:16;
 	uint32_t rsvd_2			:16;
 #endif
+	uint32_t rsvd_3;
 	struct spi_response responses[MAX_RESPONSES_IN_BATCH];
 };
 static struct spi_rx_t spi_rxbuf;
@@ -419,9 +421,9 @@ static int64_t knc_process_response(struct thr_info *thr, struct cgpu_info *cgpu
 		applog(LOG_DEBUG, "KnC spi: raw response %08X %08X",
 		       ((uint32_t *)&rxbuf->responses[i])[0],
 		       ((uint32_t *)&rxbuf->responses[i])[1]);
-		applog(LOG_DEBUG, "KnC spi: response, T:%u A:%u Q:%u W:%u",
+		applog(LOG_DEBUG, "KnC spi: response, T:%u C:%u-%u Q:%u W:%u",
 		       rxbuf->responses[i].type,
-		       rxbuf->responses[i].asic,
+		       rxbuf->responses[i].asic, rxbuf->responses[i].core,
 		       rxbuf->responses[i].queue_id,
 		       rxbuf->responses[i].work_id);
 		/* Find active work with matching ID */
@@ -436,7 +438,9 @@ static int64_t knc_process_response(struct thr_info *thr, struct cgpu_info *cgpu
 			us = timediff(&now,
 				      &knc->active_fifo[next_read_a].begin);
 			if ((us < 0) || (us >= WORK_STALE_US)) {
-				applog(LOG_DEBUG, "KnC spi: remove stale work");
+				applog(LOG_DEBUG,
+				       "KnC spi: remove stale work %u",
+				       knc->active_fifo[next_read_a].work_id);
 				work = knc->active_fifo[next_read_a].work;
 				knc_active_fifo_inc_idx(knc, &knc->read_a);
 				work_completed(cgpu, work);
@@ -518,8 +522,8 @@ static bool knc_selftest(struct spidev_context *ctx, int devices)
 		return true;
 
 	assert(sizeof(struct spi_request) == 48);
-	assert(sizeof(struct spi_response) == 8);
-	assert(sizeof(spi_rxbuf) == ((MAX_RESPONSES_IN_BATCH + 1) * 8));
+	assert(sizeof(struct spi_response) == 12);
+	assert(sizeof(spi_rxbuf) == ((MAX_RESPONSES_IN_BATCH + 1) * 12));
 
 	return true;
 }
