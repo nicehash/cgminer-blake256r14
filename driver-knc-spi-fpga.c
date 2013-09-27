@@ -27,6 +27,9 @@
 /* Max number of ASICs permitted on one SPI device */
 #define MAX_ASICS		6
 
+/* How many hardware errors in a row before disabling the core */
+#define HW_ERR_LIMIT		10
+
 #define MAX_ACTIVE_WORKS	(192 * 2 * 6 * 2)
 
 #define WORK_MIDSTATE_WORDS	8
@@ -148,6 +151,7 @@ struct knc_state {
 	struct timeval lastscan;
 	struct timeval jupiter_work_start[KNC_ACTIVE_BUFFER_SIZE];
 #endif
+	uint8_t hwerrs[MAX_ASICS * 256];
 };
 
 static inline bool knc_queued_fifo_full(struct knc_state *knc)
@@ -274,6 +278,14 @@ static int spi_transfer(struct spidev_context *ctx, uint8_t *txbuf,
 	}
 #endif
 	return ret;
+}
+
+static void disable_core(uint8_t asic, uint8_t core)
+{
+	char str[256];
+	snprintf(str, sizeof(str), "i2cset -y 2 0x2%hhu %hhu 0", asic, core);
+	if (0 != WEXITSTATUS(system(str)))
+		applog(LOG_ERR, "KnC: system call failed");
 }
 
 static int64_t timediff(const struct timeval *a, const struct timeval *b)
@@ -460,9 +472,24 @@ static int64_t knc_process_response(struct thr_info *thr, struct cgpu_info *cgpu
 		work = knc->active_fifo[next_read_a].work;
 
 		if (rxbuf->responses[i].type == RESPONSE_TYPE_NONCE_FOUND) {
-			if (NULL != thr)
-				submit_nonce(thr, work,
-					     rxbuf->responses[i].nonce);
+			if (NULL != thr) {
+				int cidx = rxbuf->responses[i].asic * 256 +
+					   rxbuf->responses[i].core;
+				if (submit_nonce(thr, work,
+						 rxbuf->responses[i].nonce)) {
+					if (cidx < sizeof(knc->hwerrs))
+						knc->hwerrs[cidx] = 0;
+				} else  {
+					if (cidx < sizeof(knc->hwerrs)) {
+						if (++(knc->hwerrs[cidx]) >= HW_ERR_LIMIT) {
+						    disable_core(rxbuf->responses[i].asic, rxbuf->responses[i].core);
+							applog(LOG_WARNING,
+		"KnC: core %u-%u was disabled due to %u HW errors in a row",
+		rxbuf->responses[i].asic,rxbuf->responses[i].core,HW_ERR_LIMIT);
+						}
+					}
+				};
+			}
 			continue;
 		}
 
