@@ -164,7 +164,7 @@ static inline bool knc_active_fifo_full(struct knc_state *knc)
 	return (knc->read_a == knc->write_a);
 }
 
-static inline void knc_queued_fifo_inc_idx(struct knc_state *knc, int *idx)
+static inline void knc_queued_fifo_inc_idx(int *idx)
 {
 	if (unlikely(*idx >= (KNC_QUEUED_BUFFER_SIZE - 1)))
 		*idx = 0;
@@ -172,7 +172,7 @@ static inline void knc_queued_fifo_inc_idx(struct knc_state *knc, int *idx)
 		++(*idx);
 }
 
-static inline void knc_active_fifo_inc_idx(struct knc_state *knc, int *idx)
+static inline void knc_active_fifo_inc_idx(int *idx)
 {
 	if (unlikely(*idx >= (KNC_ACTIVE_BUFFER_SIZE - 1)))
 		*idx = 0;
@@ -348,7 +348,7 @@ static int64_t knc_process_response(struct thr_info *thr, struct cgpu_info *cgpu
 	submitted = 0;
 	for (i = 0; i < works; ++i) {
 		next_read_q = knc->read_q;
-		knc_queued_fifo_inc_idx(knc, &next_read_q);
+		knc_queued_fifo_inc_idx(&next_read_q);
 		if ((next_read_q == knc->write_q) || knc_active_fifo_full(knc))
 			break;
 		memcpy(&knc->active_fifo[knc->write_a],
@@ -357,7 +357,7 @@ static int64_t knc_process_response(struct thr_info *thr, struct cgpu_info *cgpu
 		knc->jupiter_work_start[knc->write_a] = now;
 		knc->queued_fifo[next_read_q].work = NULL;
 		knc->read_q = next_read_q;
-		knc_active_fifo_inc_idx(knc, &knc->write_a);
+		knc_active_fifo_inc_idx(&knc->write_a);
 		++submitted;
 	}
 	if (submitted > 0) {
@@ -370,7 +370,7 @@ static int64_t knc_process_response(struct thr_info *thr, struct cgpu_info *cgpu
 	/* check for completed works */
 	completed = 0;
 	next_read_a = knc->read_a;
-	knc_active_fifo_inc_idx(knc, &next_read_a);
+	knc_active_fifo_inc_idx(&next_read_a);
 	while (next_read_a != knc->write_a) {
 		us = timediff(&now, &knc->jupiter_work_start[next_read_a]);
 		if ((us >= 0) && (us < 4000000))
@@ -381,7 +381,7 @@ static int64_t knc_process_response(struct thr_info *thr, struct cgpu_info *cgpu
 			submit_nonce(thr, work, 0);
 		work_completed(cgpu, work);
 		knc->active_fifo[next_read_a].work = NULL;
-		knc_active_fifo_inc_idx(knc, &next_read_a);
+		knc_active_fifo_inc_idx(&next_read_a);
 		++completed;
 	}
 #else
@@ -404,7 +404,7 @@ static int64_t knc_process_response(struct thr_info *thr, struct cgpu_info *cgpu
 	submitted = 0;
 	for (i = 0; i < rxbuf->works_accepted; ++i) {
 		next_read_q = knc->read_q;
-		knc_queued_fifo_inc_idx(knc, &next_read_q);
+		knc_queued_fifo_inc_idx(&next_read_q);
 		if ((next_read_q == knc->write_q) || knc_active_fifo_full(knc))
 			break;
 		memcpy(&knc->active_fifo[knc->write_a],
@@ -413,7 +413,7 @@ static int64_t knc_process_response(struct thr_info *thr, struct cgpu_info *cgpu
 		knc->active_fifo[knc->write_a].begin = now;
 		knc->queued_fifo[next_read_q].work = NULL;
 		knc->read_q = next_read_q;
-		knc_active_fifo_inc_idx(knc, &knc->write_a);
+		knc_active_fifo_inc_idx(&knc->write_a);
 		++submitted;
 	}
 	if (submitted != rxbuf->works_accepted)
@@ -440,7 +440,7 @@ static int64_t knc_process_response(struct thr_info *thr, struct cgpu_info *cgpu
 		       rxbuf->responses[i].work_id);
 		/* Find active work with matching ID */
 		next_read_a = knc->read_a;
-		knc_active_fifo_inc_idx(knc, &next_read_a);
+		knc_active_fifo_inc_idx(&next_read_a);
 		while (next_read_a != knc->write_a) {
 			if (knc->active_fifo[next_read_a].work_id ==
 			    rxbuf->responses[i].work_id)
@@ -454,7 +454,7 @@ static int64_t knc_process_response(struct thr_info *thr, struct cgpu_info *cgpu
 				       "KnC spi: remove stale work %u",
 				       knc->active_fifo[next_read_a].work_id);
 				work = knc->active_fifo[next_read_a].work;
-				knc_active_fifo_inc_idx(knc, &knc->read_a);
+				knc_active_fifo_inc_idx(&knc->read_a);
 				work_completed(cgpu, work);
 				if (next_read_a != knc->read_a)
 					memcpy(&(knc->active_fifo[next_read_a]),
@@ -463,7 +463,7 @@ static int64_t knc_process_response(struct thr_info *thr, struct cgpu_info *cgpu
 				knc->active_fifo[knc->read_a].work = NULL;
 			}
 
-			knc_active_fifo_inc_idx(knc, &next_read_a);
+			knc_active_fifo_inc_idx(&next_read_a);
 		}
 		if (next_read_a == knc->write_a)
 			continue;
@@ -494,7 +494,7 @@ static int64_t knc_process_response(struct thr_info *thr, struct cgpu_info *cgpu
 		}
 
 		/* Work completed */
-		knc_active_fifo_inc_idx(knc, &knc->read_a);
+		knc_active_fifo_inc_idx(&knc->read_a);
 		work_completed(cgpu, work);
 		if (next_read_a != knc->read_a)
 			memcpy(&(knc->active_fifo[next_read_a]),
@@ -652,11 +652,11 @@ static int64_t knc_scanwork(struct thr_info *thr)
 	memset(spi_txbuf, 0, sizeof(spi_txbuf));
 	num = 0;
 	next_read_q = knc->read_q;
-	knc_queued_fifo_inc_idx(knc, &next_read_q);
+	knc_queued_fifo_inc_idx(&next_read_q);
 	while (next_read_q != knc->write_q) {
 		knc_work_from_queue_to_spi(knc, &knc->queued_fifo[next_read_q],
 					   &spi_txbuf[num]);
-		knc_queued_fifo_inc_idx(knc, &next_read_q);
+		knc_queued_fifo_inc_idx(&next_read_q);
 		++num;
 	}
 	/* knc->read_q is advanced in knc_process_response, not here */
@@ -686,7 +686,7 @@ static bool knc_queue_full(struct cgpu_info *cgpu)
 			break;
 		}
 		knc->queued_fifo[knc->write_q].work = work;
-		knc_queued_fifo_inc_idx(knc, &(knc->write_q));
+		knc_queued_fifo_inc_idx(&(knc->write_q));
 	}
 
 	return queue_full;
@@ -703,24 +703,24 @@ static void knc_flush_work(struct cgpu_info *cgpu)
 
 	/* Drain queued works */
 	next_read_q = knc->read_q;
-	knc_queued_fifo_inc_idx(knc, &next_read_q);
+	knc_queued_fifo_inc_idx(&next_read_q);
 	while (next_read_q != knc->write_q) {
 		work = knc->queued_fifo[next_read_q].work;
 		work_completed(cgpu, work);
 		knc->queued_fifo[next_read_q].work = NULL;
 		knc->read_q = next_read_q;
-		knc_queued_fifo_inc_idx(knc, &next_read_q);
+		knc_queued_fifo_inc_idx(&next_read_q);
 	}
 
 	/* Drain active works */
 	next_read_a = knc->read_a;
-	knc_active_fifo_inc_idx(knc, &next_read_a);
+	knc_active_fifo_inc_idx(&next_read_a);
 	while (next_read_a != knc->write_a) {
 		work = knc->active_fifo[next_read_a].work;
 		work_completed(cgpu, work);
 		knc->active_fifo[next_read_a].work = NULL;
 		knc->read_a = next_read_a;
-		knc_active_fifo_inc_idx(knc, &next_read_a);
+		knc_active_fifo_inc_idx(&next_read_a);
 	}
 
 	len = _internal_knc_flush_fpga(knc);
