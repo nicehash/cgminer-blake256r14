@@ -35,7 +35,7 @@
 #define WORK_MIDSTATE_WORDS	8
 #define WORK_DATA_WORDS		3
 
-#define WORK_STALE_US		5000000
+#define WORK_STALE_US		60000000
 
 struct spidev_context {
 	int fd;
