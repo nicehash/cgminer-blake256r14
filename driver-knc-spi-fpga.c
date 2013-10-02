@@ -37,6 +37,9 @@
 
 #define WORK_STALE_US		60000000
 
+/* Keep core disabled for no longer than 15 minutes */
+#define CORE_DISA_PERIOD_US	(15 * 60 * 1000000)
+
 struct spidev_context {
 	int fd;
 	uint32_t speed;
@@ -124,6 +127,12 @@ struct active_work {
 	struct timeval begin;
 };
 
+struct core_disa_data {
+	struct timeval disa_begin;
+	uint8_t asic;
+	uint8_t core;
+};
+
 struct knc_state {
 	struct spidev_context *ctx;
 	int devices;
@@ -152,6 +161,9 @@ struct knc_state {
 	struct timeval jupiter_work_start[KNC_ACTIVE_BUFFER_SIZE];
 #endif
 	uint8_t hwerrs[MAX_ASICS * 256];
+	int read_d, write_d;
+#define KNC_DISA_CORES_SIZE	(MAX_ASICS * 256)
+	struct core_disa_data disa_cores_fifo[KNC_DISA_CORES_SIZE];
 };
 
 static inline bool knc_queued_fifo_full(struct knc_state *knc)
@@ -175,6 +187,14 @@ static inline void knc_queued_fifo_inc_idx(int *idx)
 static inline void knc_active_fifo_inc_idx(int *idx)
 {
 	if (unlikely(*idx >= (KNC_ACTIVE_BUFFER_SIZE - 1)))
+		*idx = 0;
+	else
+		++(*idx);
+}
+
+static inline void knc_disa_cores_fifo_inc_idx(int *idx)
+{
+	if (unlikely(*idx >= (KNC_DISA_CORES_SIZE - 1)))
 		*idx = 0;
 	else
 		++(*idx);
@@ -288,11 +308,45 @@ static void disable_core(uint8_t asic, uint8_t core)
 		applog(LOG_ERR, "KnC: system call failed");
 }
 
+static void enable_core(uint8_t asic, uint8_t core)
+{
+	char str[256];
+	snprintf(str, sizeof(str), "i2cset -y 2 0x2%hhu %hhu 1", asic, core);
+	if (0 != WEXITSTATUS(system(str)))
+		applog(LOG_ERR, "KnC: system call failed");
+}
+
 static int64_t timediff(const struct timeval *a, const struct timeval *b)
 {
 	struct timeval diff;
 	timersub(a, b, &diff);
 	return diff.tv_sec * 1000000 + diff.tv_usec;
+}
+
+static void knc_check_disabled_cores(struct knc_state *knc)
+{
+	int next_read_d;
+	struct timeval now;
+	int64_t us;
+	struct core_disa_data *core;
+	int cidx;
+
+	next_read_d = knc->read_d;
+	knc_disa_cores_fifo_inc_idx(&next_read_d);
+	if (next_read_d == knc->write_d)
+		return; /* queue empty */
+	core = &knc->disa_cores_fifo[next_read_d];
+	gettimeofday(&now, NULL);
+	us = timediff(&now, &core->disa_begin);
+	if ((us >= 0) && (us < CORE_DISA_PERIOD_US))
+		return; /* latest disabled core still not expired */
+	cidx = core->asic * 256 + core->core;
+	enable_core(core->asic, core->core);
+	knc->hwerrs[cidx] = 0;
+	applog(LOG_NOTICE,
+	       "KnC: core %u-%u was enabled back from disabled state",
+	       core->asic, core->core);
+	knc->read_d = next_read_d;
 }
 
 static void knc_work_from_queue_to_spi(struct knc_state *knc,
@@ -482,10 +536,16 @@ static int64_t knc_process_response(struct thr_info *thr, struct cgpu_info *cgpu
 				} else  {
 					if (cidx < sizeof(knc->hwerrs)) {
 						if (++(knc->hwerrs[cidx]) >= HW_ERR_LIMIT) {
-						    disable_core(rxbuf->responses[i].asic, rxbuf->responses[i].core);
-							applog(LOG_WARNING,
-		"KnC: core %u-%u was disabled due to %u HW errors in a row",
-		rxbuf->responses[i].asic,rxbuf->responses[i].core,HW_ERR_LIMIT);
+						    struct core_disa_data *core;
+						    core = &knc->disa_cores_fifo[knc->write_d];
+						    core->disa_begin = now;
+						    core->asic = rxbuf->responses[i].asic;
+						    core->core = rxbuf->responses[i].core;
+						    disable_core(core->asic, core->core);
+						    applog(LOG_WARNING,
+			"KnC: core %u-%u was disabled due to %u HW errors in a row",
+							   core->asic, core->core, HW_ERR_LIMIT);
+						    knc_disa_cores_fifo_inc_idx(&knc->write_d);
 						}
 					}
 				};
@@ -585,6 +645,8 @@ static bool knc_detect_one(struct spidev_context *ctx)
 	knc->write_q = 1;
 	knc->read_a = 0;
 	knc->write_a = 1;
+	knc->read_d = 0;
+	knc->write_d = 1;
 	knc->salt = rand();
 #ifdef ENABLE_BENCHMARK
 	gettimeofday(&knc->lastscan, NULL);
@@ -647,6 +709,8 @@ static int64_t knc_scanwork(struct thr_info *thr)
 	int next_read_q;
 
 	applog(LOG_DEBUG, "KnC running scanwork");
+
+	knc_check_disabled_cores(knc);
 
 	/* Prepare tx buffer */
 	memset(spi_txbuf, 0, sizeof(spi_txbuf));
