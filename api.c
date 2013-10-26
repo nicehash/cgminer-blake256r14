@@ -1,6 +1,6 @@
 /*
  * Copyright 2011-2013 Andrew Smith
- * Copyright 2011-2012 Con Kolivas
+ * Copyright 2011-2013 Con Kolivas
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -22,17 +22,18 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <unistd.h>
+#include <limits.h>
 #include <sys/types.h>
 
 #include "compat.h"
 #include "miner.h"
 #include "util.h"
 
-#if defined(USE_BFLSC) || defined(USE_AVALON)
+#if defined(USE_BFLSC) || defined(USE_AVALON) || defined(USE_BITFURY) || defined(USE_KLONDIKE)
 #define HAVE_AN_ASIC 1
 #endif
 
-#if defined(USE_BITFORCE) || defined(USE_ICARUS) || defined(USE_ZTEX) || defined(USE_MODMINER)
+#if defined(USE_BITFORCE) || defined(USE_ICARUS) || defined(USE_MODMINER)
 #define HAVE_AN_FPGA 1
 #endif
 
@@ -126,6 +127,7 @@ char *WSAErrorMsg(void) {
 #endif
 
 static const char *UNAVAILABLE = " - API will not be available";
+static const char *MUNAVAILABLE = " - API multicast listener will not be available";
 
 static const char *BLANK = "";
 static const char *COMMA = ",";
@@ -134,7 +136,7 @@ static const char SEPARATOR = '|';
 #define SEPSTR "|"
 static const char GPUSEP = ',';
 
-static const char *APIVERSION = "1.28";
+static const char *APIVERSION = "1.32";
 static const char *DEAD = "Dead";
 #if defined(HAVE_OPENCL) || defined(HAVE_AN_FPGA) || defined(HAVE_AN_ASIC)
 static const char *SICK = "Sick";
@@ -174,14 +176,14 @@ static const char *DEVICECODE = ""
 #ifdef USE_BITFORCE
 			"BFL "
 #endif
+#ifdef USE_BITFURY
+			"BFU "
+#endif
 #ifdef USE_ICARUS
 			"ICA "
 #endif
 #ifdef USE_AVALON
 			"AVA "
-#endif
-#ifdef USE_ZTEX
-			"ZTX "
 #endif
 #ifdef USE_MODMINER
 			"MMQ "
@@ -421,6 +423,11 @@ static const char *JSON_PARAMETER = "parameter";
 #define MSG_ASCSETERR 120
 #endif
 
+#define MSG_INVNEG 121
+#define MSG_SETQUOTA 122
+#define MSG_LOCKOK 123
+#define MSG_LOCKDIS 124
+
 enum code_severity {
 	SEVERITY_ERR,
 	SEVERITY_WARN,
@@ -581,6 +588,8 @@ struct CODES {
  { SEVERITY_SUCC,  MSG_SETCONFIG,PARAM_SET,	"Set config '%s' to %d" },
  { SEVERITY_ERR,   MSG_UNKCON,	PARAM_STR,	"Unknown config '%s'" },
  { SEVERITY_ERR,   MSG_INVNUM,	PARAM_BOTH,	"Invalid number (%d) for '%s' range is 0-9999" },
+ { SEVERITY_ERR,   MSG_INVNEG,	PARAM_BOTH,	"Invalid negative number (%d) for '%s'" },
+ { SEVERITY_SUCC,  MSG_SETQUOTA,PARAM_SET,	"Set pool '%s' to quota %d'" },
  { SEVERITY_ERR,   MSG_CONPAR,	PARAM_NONE,	"Missing config parameters 'name,N'" },
  { SEVERITY_ERR,   MSG_CONVAL,	PARAM_STR,	"Missing config value N for '%s,N'" },
  { SEVERITY_SUCC,  MSG_USBSTA,	PARAM_NONE,	"USB Statistics" },
@@ -617,13 +626,17 @@ struct CODES {
  { SEVERITY_SUCC,  MSG_ASCIDENT,PARAM_ASC,	"Identify command sent to ASC%d" },
  { SEVERITY_WARN,  MSG_ASCNOID,	PARAM_ASC,	"ASC%d does not support identify" },
  { SEVERITY_ERR,   MSG_MISASCOPT, PARAM_NONE,	"Missing option after ASC number" },
- { SEVERITY_WARN,  MSG_ASCNOSET, PARAM_ASC,	"ASC %d does not support pgaset" },
+ { SEVERITY_WARN,  MSG_ASCNOSET, PARAM_ASC,	"ASC %d does not support ascset" },
  { SEVERITY_INFO,  MSG_ASCHELP, PARAM_BOTH,	"ASC %d set help: %s" },
  { SEVERITY_SUCC,  MSG_ASCSETOK, PARAM_BOTH,	"ASC %d set OK" },
  { SEVERITY_ERR,   MSG_ASCSETERR, PARAM_BOTH,	"ASC %d set failed: %s" },
 #endif
+ { SEVERITY_SUCC,  MSG_LOCKOK,	PARAM_NONE,	"Lock stats created" },
+ { SEVERITY_WARN,  MSG_LOCKDIS,	PARAM_NONE,	"Lock stats not enabled" },
  { SEVERITY_FAIL, 0, 0, NULL }
 };
+
+static const char *localaddr = "127.0.0.1";
 
 static int my_thr_id = 0;
 static bool bye;
@@ -1199,22 +1212,18 @@ static struct api_data *print_data(struct api_data *root, char *buf, bool isjson
 	return root;
 }
 
+#define DRIVER_COUNT_DRV(X) if (devices[i]->drv->drv_id == DRIVER_##X) \
+	count++;
+
 #ifdef HAVE_AN_ASIC
-static int numascs()
+static int numascs(void)
 {
 	int count = 0;
 	int i;
 
 	rd_lock(&devices_lock);
 	for (i = 0; i < total_devices; i++) {
-#ifdef USE_AVALON
-		if (devices[i]->drv->drv_id == DRIVER_AVALON)
-			count++;
-#endif
-#ifdef USE_BFLSC
-		if (devices[i]->drv->drv_id == DRIVER_BFLSC)
-			count++;
-#endif
+		ASIC_PARSE_COMMANDS(DRIVER_COUNT_DRV)
 	}
 	rd_unlock(&devices_lock);
 	return count;
@@ -1227,14 +1236,7 @@ static int ascdevice(int ascid)
 
 	rd_lock(&devices_lock);
 	for (i = 0; i < total_devices; i++) {
-#ifdef USE_AVALON
-		if (devices[i]->drv->drv_id == DRIVER_AVALON)
-			count++;
-#endif
-#ifdef USE_BFLSC
-		if (devices[i]->drv->drv_id == DRIVER_BFLSC)
-			count++;
-#endif
+		ASIC_PARSE_COMMANDS(DRIVER_COUNT_DRV)
 		if (count == (ascid + 1))
 			goto foundit;
 	}
@@ -1250,29 +1252,14 @@ foundit:
 #endif
 
 #ifdef HAVE_AN_FPGA
-static int numpgas()
+static int numpgas(void)
 {
 	int count = 0;
 	int i;
 
 	rd_lock(&devices_lock);
 	for (i = 0; i < total_devices; i++) {
-#ifdef USE_BITFORCE
-		if (devices[i]->drv->drv_id == DRIVER_BITFORCE)
-			count++;
-#endif
-#ifdef USE_ICARUS
-		if (devices[i]->drv->drv_id == DRIVER_ICARUS)
-			count++;
-#endif
-#ifdef USE_ZTEX
-		if (devices[i]->drv->drv_id == DRIVER_ZTEX)
-			count++;
-#endif
-#ifdef USE_MODMINER
-		if (devices[i]->drv->drv_id == DRIVER_MODMINER)
-			count++;
-#endif
+		FPGA_PARSE_COMMANDS(DRIVER_COUNT_DRV)
 	}
 	rd_unlock(&devices_lock);
 	return count;
@@ -1285,22 +1272,7 @@ static int pgadevice(int pgaid)
 
 	rd_lock(&devices_lock);
 	for (i = 0; i < total_devices; i++) {
-#ifdef USE_BITFORCE
-		if (devices[i]->drv->drv_id == DRIVER_BITFORCE)
-			count++;
-#endif
-#ifdef USE_ICARUS
-		if (devices[i]->drv->drv_id == DRIVER_ICARUS)
-			count++;
-#endif
-#ifdef USE_ZTEX
-		if (devices[i]->drv->drv_id == DRIVER_ZTEX)
-			count++;
-#endif
-#ifdef USE_MODMINER
-		if (devices[i]->drv->drv_id == DRIVER_MODMINER)
-			count++;
-#endif
+		FPGA_PARSE_COMMANDS(DRIVER_COUNT_DRV)
 		if (count == (pgaid + 1))
 			goto foundit;
 	}
@@ -1456,6 +1428,399 @@ static void message(struct io_data *io_data, int messageid, int paramid, char *p
 	io_add(io_data, buf2);
 	if (isjson)
 		io_add(io_data, JSON_CLOSE);
+}
+
+#if LOCK_TRACKING
+
+#define LOCK_FMT_FFL " - called from %s %s():%d"
+
+#define LOCKMSG(fmt, ...)	fprintf(stderr, "APILOCK: " fmt "\n", ##__VA_ARGS__)
+#define LOCKMSGMORE(fmt, ...)	fprintf(stderr, "          " fmt "\n", ##__VA_ARGS__)
+#define LOCKMSGFFL(fmt, ...) fprintf(stderr, "APILOCK: " fmt LOCK_FMT_FFL "\n", ##__VA_ARGS__, file, func, linenum)
+#define LOCKMSGFLUSH() fflush(stderr)
+
+typedef struct lockstat {
+	uint64_t lock_id;
+	const char *file;
+	const char *func;
+	int linenum;
+	struct timeval tv;
+} LOCKSTAT;
+
+typedef struct lockline {
+	struct lockline *prev;
+	struct lockstat *stat;
+	struct lockline *next;
+} LOCKLINE;
+
+typedef struct lockinfo {
+	void *lock;
+	enum cglock_typ typ;
+	const char *file;
+	const char *func;
+	int linenum;
+	uint64_t gets;
+	uint64_t gots;
+	uint64_t tries;
+	uint64_t dids;
+	uint64_t didnts; // should be tries - dids
+	uint64_t unlocks;
+	LOCKSTAT lastgot;
+	LOCKLINE *lockgets;
+	LOCKLINE *locktries;
+} LOCKINFO;
+
+typedef struct locklist {
+	LOCKINFO *info;
+	struct locklist *next;
+} LOCKLIST;
+
+static uint64_t lock_id = 1;
+
+static LOCKLIST *lockhead;
+
+static void lockmsgnow()
+{
+	struct timeval now;
+	struct tm *tm;
+	time_t dt;
+
+	cgtime(&now);
+
+	dt = now.tv_sec;
+	tm = localtime(&dt);
+
+	LOCKMSG("%d-%02d-%02d %02d:%02d:%02d",
+		tm->tm_year + 1900,
+		tm->tm_mon + 1,
+		tm->tm_mday,
+		tm->tm_hour,
+		tm->tm_min,
+		tm->tm_sec);
+}
+
+static LOCKLIST *newlock(void *lock, enum cglock_typ typ, const char *file, const char *func, const int linenum)
+{
+	LOCKLIST *list;
+
+	list = calloc(1, sizeof(*list));
+	if (!list)
+		quithere(1, "OOM list");
+	list->info = calloc(1, sizeof(*(list->info)));
+	if (!list->info)
+		quithere(1, "OOM info");
+	list->next = lockhead;
+	lockhead = list;
+
+	list->info->lock = lock;
+	list->info->typ = typ;
+	list->info->file = file;
+	list->info->func = func;
+	list->info->linenum = linenum;
+
+	return list;
+}
+
+static LOCKINFO *findlock(void *lock, enum cglock_typ typ, const char *file, const char *func, const int linenum)
+{
+	LOCKLIST *look;
+
+	look = lockhead;
+	while (look) {
+		if (look->info->lock == lock)
+			break;
+		look = look->next;
+	}
+
+	if (!look)
+		look = newlock(lock, typ, file, func, linenum);
+
+	return look->info;
+}
+
+static void addgettry(LOCKINFO *info, uint64_t id, const char *file, const char *func, const int linenum, bool get)
+{
+	LOCKSTAT *stat;
+	LOCKLINE *line;
+
+	stat = calloc(1, sizeof(*stat));
+	if (!stat)
+		quithere(1, "OOM stat");
+	line = calloc(1, sizeof(*line));
+	if (!line)
+		quithere(1, "OOM line");
+
+	if (get)
+		info->gets++;
+	else
+		info->tries++;
+
+	stat->lock_id = id;
+	stat->file = file;
+	stat->func = func;
+	stat->linenum = linenum;
+	cgtime(&stat->tv);
+
+	line->stat = stat;
+
+	if (get) {
+		line->next = info->lockgets;
+		if (info->lockgets)
+			info->lockgets->prev = line;
+		info->lockgets = line;
+	} else {
+		line->next = info->locktries;
+		if (info->locktries)
+			info->locktries->prev = line;
+		info->locktries = line;
+	}
+}
+
+static void markgotdid(LOCKINFO *info, uint64_t id, const char *file, const char *func, const int linenum, bool got, int ret)
+{
+	LOCKLINE *line;
+
+	if (got)
+		info->gots++;
+	else {
+		if (ret == 0)
+			info->dids++;
+		else
+			info->didnts++;
+	}
+
+	if (got || ret == 0) {
+		info->lastgot.lock_id = id;
+		info->lastgot.file = file;
+		info->lastgot.func = func;
+		info->lastgot.linenum = linenum;
+		cgtime(&info->lastgot.tv);
+	}
+
+	if (got)
+		line = info->lockgets;
+	else
+		line = info->locktries;
+	while (line) {
+		if (line->stat->lock_id == id)
+			break;
+		line = line->next;
+	}
+
+	if (!line) {
+		lockmsgnow();
+		LOCKMSGFFL("ERROR attempt to mark a lock as '%s' that wasn't '%s' id=%"PRIu64,
+				got ? "got" : "did/didnt", got ? "get" : "try", id);
+	}
+
+	// Unlink it
+	if (line->prev)
+		line->prev->next = line->next;
+	if (line->next)
+		line->next->prev = line->prev;
+
+	if (got) {
+		if (info->lockgets == line)
+			info->lockgets = line->next;
+	} else {
+		if (info->locktries == line)
+			info->locktries = line->next;
+	}
+
+	free(line->stat);
+	free(line);
+}
+
+// Yes this uses locks also ... ;/
+static void locklock()
+{
+	if (unlikely(pthread_mutex_lock(&lockstat_lock)))
+		quithere(1, "WTF MUTEX ERROR ON LOCK! errno=%d", errno);
+}
+
+static void lockunlock()
+{
+	if (unlikely(pthread_mutex_unlock(&lockstat_lock)))
+		quithere(1, "WTF MUTEX ERROR ON UNLOCK! errno=%d", errno);
+}
+
+uint64_t api_getlock(void *lock, const char *file, const char *func, const int linenum)
+{
+	LOCKINFO *info;
+	uint64_t id;
+
+	locklock();
+
+	info = findlock(lock, CGLOCK_UNKNOWN, file, func, linenum);
+	id = lock_id++;
+	addgettry(info, id, file, func, linenum, true);
+
+	lockunlock();
+
+	return id;
+}
+
+void api_gotlock(uint64_t id, void *lock, const char *file, const char *func, const int linenum)
+{
+	LOCKINFO *info;
+
+	locklock();
+
+	info = findlock(lock, CGLOCK_UNKNOWN, file, func, linenum);
+	markgotdid(info, id, file, func, linenum, true, 0);
+
+	lockunlock();
+}
+
+uint64_t api_trylock(void *lock, const char *file, const char *func, const int linenum)
+{
+	LOCKINFO *info;
+	uint64_t id;
+
+	info = findlock(lock, CGLOCK_UNKNOWN, file, func, linenum);
+	id = lock_id++;
+	addgettry(info, id, file, func, linenum, false);
+
+	return id;
+}
+
+void api_didlock(uint64_t id, int ret, void *lock, const char *file, const char *func, const int linenum)
+{
+	LOCKINFO *info;
+
+	locklock();
+
+	info = findlock(lock, CGLOCK_UNKNOWN, file, func, linenum);
+	markgotdid(info, id, file, func, linenum, false, ret);
+
+	lockunlock();
+}
+
+void api_gunlock(void *lock, const char *file, const char *func, const int linenum)
+{
+	LOCKINFO *info;
+
+	locklock();
+
+	info = findlock(lock, CGLOCK_UNKNOWN, file, func, linenum);
+	info->unlocks++;
+
+	lockunlock();
+}
+
+void api_initlock(void *lock, enum cglock_typ typ, const char *file, const char *func, const int linenum)
+{
+	locklock();
+
+	findlock(lock, typ, file, func, linenum);
+
+	lockunlock();
+}
+
+void dsp_det(char *msg, LOCKSTAT *stat)
+{
+	struct tm *tm;
+	time_t dt;
+
+	dt = stat->tv.tv_sec;
+	tm = localtime(&dt);
+
+	LOCKMSGMORE("%s id=%"PRIu64" by %s %s():%d at %d-%02d-%02d %02d:%02d:%02d",
+			msg,
+			stat->lock_id,
+			stat->file,
+			stat->func,
+			stat->linenum,
+			tm->tm_year + 1900,
+			tm->tm_mon + 1,
+			tm->tm_mday,
+			tm->tm_hour,
+			tm->tm_min,
+			tm->tm_sec);
+}
+
+void dsp_lock(LOCKINFO *info)
+{
+	LOCKLINE *line;
+	char *status;
+
+	LOCKMSG("Lock %p created by %s %s():%d",
+		info->lock,
+		info->file,
+		info->func,
+		info->linenum);
+	LOCKMSGMORE("gets:%"PRIu64" gots:%"PRIu64" tries:%"PRIu64
+		    " dids:%"PRIu64" didnts:%"PRIu64" unlocks:%"PRIu64,
+			info->gets,
+			info->gots,
+			info->tries,
+			info->dids,
+			info->didnts,
+			info->unlocks);
+
+	if (info->gots > 0 || info->dids > 0) {
+		if (info->unlocks < info->gots + info->dids)
+			status = "Last got/did still HELD";
+		else
+			status = "Last got/did (idle)";
+
+		dsp_det(status, &(info->lastgot));
+	} else
+		LOCKMSGMORE("... unused ...");
+
+	if (info->lockgets) {
+		LOCKMSGMORE("BLOCKED gets (%"PRIu64")", info->gets - info->gots);
+		line = info->lockgets;
+		while (line) {
+			dsp_det("", line->stat);
+			line = line->next;
+		}
+	} else
+		LOCKMSGMORE("no blocked gets");
+
+	if (info->locktries) {
+		LOCKMSGMORE("BLOCKED tries (%"PRIu64")", info->tries - info->dids - info->didnts);
+		line = info->lockgets;
+		while (line) {
+			dsp_det("", line->stat);
+			line = line->next;
+		}
+	} else
+		LOCKMSGMORE("no blocked tries");
+}
+
+void show_locks()
+{
+	LOCKLIST *list;
+
+	locklock();
+
+	lockmsgnow();
+
+	list = lockhead;
+	if (!list)
+		LOCKMSG("no locks?!?\n");
+	else {
+		while (list) {
+			dsp_lock(list->info);
+			list = list->next;
+		}
+	}
+
+	LOCKMSGFLUSH();
+
+	lockunlock();
+}
+#endif
+
+static void lockstats(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __maybe_unused char *param, bool isjson, __maybe_unused char group)
+{
+#if LOCK_TRACKING
+	show_locks();
+	message(io_data, MSG_LOCKOK, 0, NULL, isjson);
+#else
+	message(io_data, MSG_LOCKDIS, 0, NULL, isjson);
+#endif
 }
 
 static void apiversion(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __maybe_unused char *param, bool isjson, __maybe_unused char group)
@@ -1633,6 +1998,7 @@ static void gpustatus(struct io_data *io_data, int gpu, bool isjson, bool precom
 		double rejp = cgpu->diff1 ?
 				(double)(cgpu->diff_rejected) / (double)(cgpu->diff1) : 0;
 		root = api_add_percent(root, "Device Rejected%", &rejp, false);
+		root = api_add_elapsed(root, "Device Elapsed", &(total_secs), true); // GPUs don't hotplug
 
 		root = print_data(root, buf, isjson, precom);
 		io_add(io_data, buf);
@@ -1712,6 +2078,7 @@ static void ascstatus(struct io_data *io_data, int asc, bool isjson, bool precom
 		double rejp = cgpu->diff1 ?
 				(double)(cgpu->diff_rejected) / (double)(cgpu->diff1) : 0;
 		root = api_add_percent(root, "Device Rejected%", &rejp, false);
+		root = api_add_elapsed(root, "Device Elapsed", &(dev_runtime), false);
 
 		root = print_data(root, buf, isjson, precom);
 		io_add(io_data, buf);
@@ -1749,12 +2116,8 @@ static void pgastatus(struct io_data *io_data, int pga, bool isjson, bool precom
 		if (dev_runtime < 1.0)
 			dev_runtime = 1.0;
 
-#ifdef USE_ZTEX
-		if (cgpu->drv->drv_id == DRIVER_ZTEX && cgpu->device_ztex)
-			frequency = cgpu->device_ztex->freqM1 * (cgpu->device_ztex->freqM + 1);
-#endif
 #ifdef USE_MODMINER
-		if (cgpu->drv->drv_id == DRIVER_MODMINER)
+		if (cgpu->drv->drv_id == DRIVER_modminer)
 			frequency = cgpu->clock;
 #endif
 
@@ -1802,6 +2165,7 @@ static void pgastatus(struct io_data *io_data, int pga, bool isjson, bool precom
 		double rejp = cgpu->diff1 ?
 				(double)(cgpu->diff_rejected) / (double)(cgpu->diff1) : 0;
 		root = api_add_percent(root, "Device Rejected%", &rejp, false);
+		root = api_add_elapsed(root, "Device Elapsed", &(dev_runtime), false);
 
 		root = print_data(root, buf, isjson, precom);
 		io_add(io_data, buf);
@@ -2142,6 +2506,7 @@ static void poolstatus(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __m
 		root = api_add_escape(root, "URL", pool->rpc_url, false);
 		root = api_add_string(root, "Status", status, false);
 		root = api_add_int(root, "Priority", &(pool->prio), false);
+		root = api_add_int(root, "Quota", &pool->quota, false);
 		root = api_add_string(root, "Long Poll", lp, false);
 		root = api_add_uint(root, "Getworks", &(pool->getwork_requested), false);
 		root = api_add_int(root, "Accepted", &(pool->accepted), false);
@@ -2206,6 +2571,9 @@ static void summary(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __mayb
 
 	root = api_add_elapsed(root, "Elapsed", &(total_secs), true);
 	root = api_add_mhs(root, "MHS av", &(mhs), false);
+	char mhsname[27];
+	sprintf(mhsname, "MHS %ds", opt_log_interval);
+	root = api_add_mhs(root, mhsname, &(total_rolling), false);
 	root = api_add_uint(root, "Found Blocks", &(found_blocks), true);
 	root = api_add_int(root, "Getworks", &(total_getworks), true);
 	root = api_add_int(root, "Accepted", &(total_accepted), true);
@@ -2612,6 +2980,48 @@ static void poolpriority(struct io_data *io_data, __maybe_unused SOCKETTYPE c, c
 		switch_pools(NULL);
 
 	message(io_data, MSG_POOLPRIO, 0, NULL, isjson);
+}
+
+static void poolquota(struct io_data *io_data, __maybe_unused SOCKETTYPE c, char *param, bool isjson, __maybe_unused char group)
+{
+	struct pool *pool;
+	int quota, id;
+	char *comma;
+
+	if (total_pools == 0) {
+		message(io_data, MSG_NOPOOL, 0, NULL, isjson);
+		return;
+	}
+
+	if (param == NULL || *param == '\0') {
+		message(io_data, MSG_MISPID, 0, NULL, isjson);
+		return;
+	}
+
+	comma = strchr(param, ',');
+	if (!comma) {
+		message(io_data, MSG_CONVAL, 0, param, isjson);
+		return;
+	}
+
+	*(comma++) = '\0';
+
+	id = atoi(param);
+	if (id < 0 || id >= total_pools) {
+		message(io_data, MSG_INVPID, id, NULL, isjson);
+		return;
+	}
+	pool = pools[id];
+
+	quota = atoi(comma);
+	if (quota < 0) {
+		message(io_data, MSG_INVNEG, quota, pool->rpc_url, isjson);
+		return;
+	}
+
+	pool->quota = quota;
+	adjust_quota_gcd();
+	message(io_data, MSG_SETQUOTA, quota, pool->rpc_url, isjson);
 }
 
 static void disablepool(struct io_data *io_data, __maybe_unused SOCKETTYPE c, char *param, bool isjson, __maybe_unused char group)
@@ -3828,6 +4238,7 @@ struct CMDS {
 	{ "switchpool",		switchpool,	true },
 	{ "addpool",		addpool,	true },
 	{ "poolpriority",	poolpriority,	true },
+	{ "poolquota",		poolquota,	true },
 	{ "enablepool",		enablepool,	true },
 	{ "disablepool",	disablepool,	true },
 	{ "removepool",		removepool,	true },
@@ -3864,6 +4275,7 @@ struct CMDS {
 	{ "ascset",		ascset,		true },
 #endif
 	{ "asccount",		asccount,	false },
+	{ "lockstats",		lockstats,	true },
 	{ NULL,			NULL,		false }
 };
 
@@ -4259,13 +4671,206 @@ static void *restart_thread(__maybe_unused void *userdata)
 	return NULL;
 }
 
+static bool check_connect(struct sockaddr_in *cli, char **connectaddr, char *group)
+{
+	bool addrok = false;
+	int i;
+
+	*connectaddr = inet_ntoa(cli->sin_addr);
+
+	*group = NOPRIVGROUP;
+	if (opt_api_allow) {
+		int client_ip = htonl(cli->sin_addr.s_addr);
+		for (i = 0; i < ips; i++) {
+			if ((client_ip & ipaccess[i].mask) == ipaccess[i].ip) {
+				addrok = true;
+				*group = ipaccess[i].group;
+				break;
+			}
+		}
+	} else {
+		if (opt_api_network)
+			addrok = true;
+		else
+			addrok = (strcmp(*connectaddr, localaddr) == 0);
+	}
+
+	return addrok;
+}
+
+static void mcast()
+{
+	struct sockaddr_in listen;
+	struct ip_mreq grp;
+	struct sockaddr_in came_from;
+	time_t bindstart;
+	char *binderror;
+	SOCKETTYPE mcast_sock;
+	SOCKETTYPE reply_sock;
+	socklen_t came_from_siz;
+	char *connectaddr;
+	ssize_t rep;
+	int bound;
+	int count;
+	int reply_port;
+	bool addrok;
+	char group;
+
+	char expect[] = "cgminer-"; // first 8 bytes constant
+	char *expect_code;
+	size_t expect_code_len;
+	char buf[1024];
+	char replybuf[1024];
+
+	memset(&grp, 0, sizeof(grp));
+	grp.imr_multiaddr.s_addr = inet_addr(opt_api_mcast_addr);
+	if (grp.imr_multiaddr.s_addr == INADDR_NONE)
+		quit(1, "Invalid Multicast Address");
+	grp.imr_interface.s_addr = INADDR_ANY;
+
+	mcast_sock = socket(AF_INET, SOCK_DGRAM, 0);
+
+	int optval = 1;
+	if (SOCKETFAIL(setsockopt(mcast_sock, SOL_SOCKET, SO_REUSEADDR, (void *)(&optval), sizeof(optval)))) {
+		applog(LOG_ERR, "API mcast setsockopt SO_REUSEADDR failed (%s)%s", SOCKERRMSG, MUNAVAILABLE);
+		goto die;
+	}
+
+	memset(&listen, 0, sizeof(listen));
+	listen.sin_family = AF_INET;
+	listen.sin_addr.s_addr = INADDR_ANY;
+	listen.sin_port = htons(opt_api_mcast_port);
+
+	// try for more than 1 minute ... in case the old one hasn't completely gone yet
+	bound = 0;
+	bindstart = time(NULL);
+	while (bound == 0) {
+		if (SOCKETFAIL(bind(mcast_sock, (struct sockaddr *)(&listen), sizeof(listen)))) {
+			binderror = SOCKERRMSG;
+			if ((time(NULL) - bindstart) > 61)
+				break;
+			else
+				cgsleep_ms(30000);
+		} else
+			bound = 1;
+	}
+
+	if (bound == 0) {
+		applog(LOG_ERR, "API mcast bind to port %d failed (%s)%s", opt_api_port, binderror, MUNAVAILABLE);
+		goto die;
+	}
+
+	if (SOCKETFAIL(setsockopt(mcast_sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, (void *)(&grp), sizeof(grp)))) {
+		applog(LOG_ERR, "API mcast join failed (%s)%s", SOCKERRMSG, MUNAVAILABLE);
+		goto die;
+	}
+
+	expect_code_len = sizeof(expect) + strlen(opt_api_mcast_code);
+	expect_code = malloc(expect_code_len+1);
+	if (!expect_code)
+		quit(1, "Failed to malloc mcast expect_code");
+	snprintf(expect_code, expect_code_len+1, "%s%s-", expect, opt_api_mcast_code);
+
+	count = 0;
+	while (80085) {
+		cgsleep_ms(1000);
+
+		count++;
+		came_from_siz = sizeof(came_from);
+		if (SOCKETFAIL(rep = recvfrom(mcast_sock, buf, sizeof(buf),
+						0, (struct sockaddr *)(&came_from), &came_from_siz))) {
+			applog(LOG_DEBUG, "API mcast failed count=%d (%s) (%d)",
+					count, SOCKERRMSG, (int)mcast_sock);
+			continue;
+		}
+
+		addrok = check_connect(&came_from, &connectaddr, &group);
+		applog(LOG_DEBUG, "API mcast from %s - %s",
+					connectaddr, addrok ? "Accepted" : "Ignored");
+		if (!addrok)
+			continue;
+
+		buf[rep] = '\0';
+		if (rep > 0 && buf[rep-1] == '\n')
+			buf[--rep] = '\0';
+
+		applog(LOG_DEBUG, "API mcast request rep=%d (%s) from %s:%d",
+					(int)rep, buf,
+					inet_ntoa(came_from.sin_addr),
+					ntohs(came_from.sin_port));
+
+		if ((size_t)rep > expect_code_len && memcmp(buf, expect_code, expect_code_len) == 0) {
+			reply_port = atoi(&buf[expect_code_len]);
+			if (reply_port < 1 || reply_port > 65535) {
+				applog(LOG_DEBUG, "API mcast request ignored - invalid port (%s)",
+							&buf[expect_code_len]);
+			} else {
+				applog(LOG_DEBUG, "API mcast request OK port %s=%d",
+							&buf[expect_code_len], reply_port);
+
+				came_from.sin_port = htons(reply_port);
+				reply_sock = socket(AF_INET, SOCK_DGRAM, 0);
+
+				snprintf(replybuf, sizeof(replybuf),
+							"cgm-" API_MCAST_CODE "-%d-%s",
+							opt_api_port, opt_api_mcast_des);
+
+				rep = sendto(reply_sock, replybuf, strlen(replybuf)+1,
+						0, (struct sockaddr *)(&came_from),
+						sizeof(came_from));
+				if (SOCKETFAIL(rep)) {
+					applog(LOG_DEBUG, "API mcast send reply failed (%s) (%d)",
+								SOCKERRMSG, (int)reply_sock);
+				} else {
+					applog(LOG_DEBUG, "API mcast send reply (%s) succeeded (%d) (%d)",
+								replybuf, (int)rep, (int)reply_sock);
+				}
+
+				CLOSESOCKET(reply_sock);
+			}
+		} else
+			applog(LOG_DEBUG, "API mcast request was no good");
+	}
+
+die:
+
+	CLOSESOCKET(mcast_sock);
+}
+
+static void *mcast_thread(void *userdata)
+{
+	struct thr_info *mythr = userdata;
+
+	pthread_detach(pthread_self());
+	pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
+
+	RenameThread("api_mcast");
+
+	mcast();
+
+	PTH(mythr) = 0L;
+
+	return NULL;
+}
+
+void mcast_init()
+{
+	struct thr_info *thr;
+
+	thr = calloc(1, sizeof(*thr));
+	if (!thr)
+		quit(1, "Failed to calloc mcast thr");
+
+	if (thr_info_create(thr, NULL, mcast_thread, thr))
+		quit(1, "API mcast thread create failed");
+}
+
 void api(int api_thr_id)
 {
 	struct io_data *io_data;
 	struct thr_info bye_thr;
 	char buf[TMPBUFSIZ];
 	char param_buf[TMPBUFSIZ];
-	const char *localaddr = "127.0.0.1";
 	SOCKETTYPE c;
 	int n, bound;
 	char *connectaddr;
@@ -4389,6 +4994,9 @@ void api(int api_thr_id)
 			applog(LOG_WARNING, "API running in local read access mode on port %d (%d)", port, (int)*apisock);
 	}
 
+	if (opt_api_mcast)
+		mcast_init();
+
 	while (!bye) {
 		clisiz = sizeof(cli);
 		if (SOCKETFAIL(c = accept(*apisock, (struct sockaddr *)(&cli), &clisiz))) {
@@ -4396,28 +5004,9 @@ void api(int api_thr_id)
 			goto die;
 		}
 
-		connectaddr = inet_ntoa(cli.sin_addr);
-
-		addrok = false;
-		group = NOPRIVGROUP;
-		if (opt_api_allow) {
-			int client_ip = htonl(cli.sin_addr.s_addr);
-			for (i = 0; i < ips; i++) {
-				if ((client_ip & ipaccess[i].mask) == ipaccess[i].ip) {
-					addrok = true;
-					group = ipaccess[i].group;
-					break;
-				}
-			}
-		} else {
-			if (opt_api_network)
-				addrok = true;
-			else
-				addrok = (strcmp(connectaddr, localaddr) == 0);
-		}
-
-		if (opt_debug)
-			applog(LOG_DEBUG, "API: connection from %s - %s", connectaddr, addrok ? "Accepted" : "Ignored");
+		addrok = check_connect(&cli, &connectaddr, &group);
+		applog(LOG_DEBUG, "API: connection from %s - %s",
+					connectaddr, addrok ? "Accepted" : "Ignored");
 
 		if (addrok) {
 			n = recv(c, &buf[0], TMPBUFSIZ-1, 0);

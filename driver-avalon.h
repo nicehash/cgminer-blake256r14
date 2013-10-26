@@ -33,19 +33,33 @@
 #define AVALON_TEMP_HYSTERESIS 3
 #define AVALON_TEMP_OVERHEAT 60
 
+/* Avalon-based BitBurner. */
 #define BITBURNER_DEFAULT_CORE_VOLTAGE 1200 /* in millivolts */
 #define BITBURNER_MIN_COREMV 1000
 /* change here if you want to risk killing it :)  */
 #define BITBURNER_MAX_COREMV 1400
 
+/* BitFury-based BitBurner. */
+#define BITBURNER_FURY_DEFAULT_CORE_VOLTAGE 900 /* in millivolts */
+#define BITBURNER_FURY_MIN_COREMV 700
+/* change here if you want to risk killing it :)  */
+#define BITBURNER_FURY_MAX_COREMV 1100
+
 
 #define AVALON_DEFAULT_TIMEOUT 0x2D
 #define AVALON_MIN_FREQUENCY 256
-#define AVALON_MAX_FREQUENCY 450
+#define AVALON_MAX_FREQUENCY 1024
 #define AVALON_TIMEOUT_FACTOR 12690
 #define AVALON_DEFAULT_FREQUENCY 282
 #define AVALON_DEFAULT_MINER_NUM 0x20
+#define AVALON_MAX_MINER_NUM 0x100
 #define AVALON_DEFAULT_ASIC_NUM 0xA
+
+/* Default number of miners for Bitburner Fury is for a stack of 8 boards,
+   but it will work acceptably for smaller stacks, too */
+#define BITBURNER_FURY_DEFAULT_MINER_NUM 128
+#define BITBURNER_FURY_DEFAULT_FREQUENCY 256
+#define BITBURNER_FURY_DEFAULT_TIMEOUT 50
 
 #define AVALON_AUTO_CYCLE 1024
 
@@ -122,9 +136,10 @@ struct avalon_info {
 	int core_voltage;
 
 	int no_matching_work;
-	int matching_work[AVALON_DEFAULT_MINER_NUM];
+	int matching_work[AVALON_MAX_MINER_NUM];
 
 	int frequency;
+	uint32_t ctlr_ver;
 
 	struct thr_info *thr;
 	pthread_t read_thr;
@@ -178,6 +193,7 @@ extern int opt_avalon_freq_min;
 extern int opt_avalon_freq_max;
 extern bool opt_avalon_auto;
 extern int opt_bitburner_core_voltage;
+extern int opt_bitburner_fury_core_voltage;
 extern char *set_avalon_fan(char *arg);
 extern char *set_avalon_freq(char *arg);
 

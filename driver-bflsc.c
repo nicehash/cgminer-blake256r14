@@ -13,6 +13,7 @@
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include <strings.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -32,22 +33,20 @@ int opt_bflsc_overheat = BFLSC_TEMP_OVERHEAT;
 
 static const char *blank = "";
 
-struct device_drv bflsc_drv;
-
 static enum driver_version drv_ver(struct cgpu_info *bflsc, const char *ver)
 {
 	char *tmp;
 
-	if (strcmp(ver, "1.0.0") == 0)
+	if (strstr(ver, "1.0.0"))
 		return BFLSC_DRV1;
 
-	if (strncmp(ver, "1.0", 3) == 0 || strncmp(ver, "1.1", 3) == 0) {
+	if (strstr(ver, "1.0.") || strstr(ver, "1.1.")) {
 		applog(LOG_WARNING, "%s detect (%s) Warning assuming firmware '%s' is Ver1",
 			bflsc->drv->dname, bflsc->device_path, ver);
 		return BFLSC_DRV1;
 	}
 
-	if (strncmp(ver, "1.2", 3) == 0)
+	if (strstr(ver, "1.2."))
 		return BFLSC_DRV2;
 
 	tmp = str_text((char *)ver);
@@ -57,10 +56,10 @@ static enum driver_version drv_ver(struct cgpu_info *bflsc, const char *ver)
 	return BFLSC_DRV2;
 }
 
-static void xlinkstr(char *xlink, int dev, struct bflsc_info *sc_info)
+static void xlinkstr(char *xlink, size_t siz, int dev, struct bflsc_info *sc_info)
 {
 	if (dev > 0)
-		sprintf(xlink, " x-%d", dev);
+		snprintf(xlink, siz, " x-%d", dev);
 	else {
 		if (sc_info->sc_count > 1)
 			strcpy(xlink, " master");
@@ -74,7 +73,7 @@ static void bflsc_applog(struct cgpu_info *bflsc, int dev, enum usb_cmds cmd, in
 	struct bflsc_info *sc_info = (struct bflsc_info *)(bflsc->device_data);
 	char xlink[17];
 
-	xlinkstr(xlink, dev, sc_info);
+	xlinkstr(xlink, sizeof(xlink), dev, sc_info);
 
 	usb_applog(bflsc, cmd, xlink, amount, err);
 }
@@ -84,7 +83,7 @@ static void bflsc_applog(struct cgpu_info *bflsc, int dev, enum usb_cmds cmd, in
 // error would be no data or missing LF at the end
 static bool tolines(struct cgpu_info *bflsc, int dev, char *buf, int *lines, char ***items, enum usb_cmds cmd)
 {
-	bool ok = true;
+	bool ok = false;
 	char *ptr;
 
 #define p_lines (*lines)
@@ -96,7 +95,7 @@ static bool tolines(struct cgpu_info *bflsc, int dev, char *buf, int *lines, cha
 	if (!buf || !(*buf)) {
 		applog(LOG_DEBUG, "USB: %s%i: (%d) empty %s",
 			bflsc->drv->name, bflsc->device_id, dev, usb_cmdname(cmd));
-		return false;
+		return ok;
 	}
 
 	ptr = strdup(buf);
@@ -109,13 +108,12 @@ static bool tolines(struct cgpu_info *bflsc, int dev, char *buf, int *lines, cha
 		if (ptr)
 			*(ptr++) = '\0';
 		else {
-			if (ok) {
-				applog(LOG_DEBUG, "USB: %s%i: (%d) missing lf(s) in %s",
-					bflsc->drv->name, bflsc->device_id, dev, usb_cmdname(cmd));
-			}
-			ok = false;
+			applog(LOG_DEBUG, "USB: %s%i: (%d) missing lf(s) in %s",
+				bflsc->drv->name, bflsc->device_id, dev, usb_cmdname(cmd));
+			return ok;
 		}
 	}
+	ok = true;
 
 	return ok;
 }
@@ -144,7 +142,7 @@ enum breakmode {
 static bool breakdown(enum breakmode mode, char *buf, int *count, char **firstname, char ***fields, char **lf)
 {
 	char *ptr, *colon, *comma;
-	bool ok;
+	bool ok = false;
 
 #define p_count (*count)
 #define p_firstname (*firstname)
@@ -157,7 +155,7 @@ static bool breakdown(enum breakmode mode, char *buf, int *count, char **firstna
 	p_lf = NULL;
 
 	if (!buf || !(*buf))
-		return false;
+		return ok;
 
 	ptr = p_firstname = strdup(buf);
 	p_lf = strchr(p_firstname, '\n');
@@ -167,23 +165,17 @@ static bool breakdown(enum breakmode mode, char *buf, int *count, char **firstna
 			ptr = colon;
 			*(ptr++) = '\0';
 		} else
-			ok = false;
+			return ok;
 	}
 
-	while (*ptr == ' ')
-		ptr++;
-
-	ok = true;
 	while (ptr && *ptr) {
 		if (mode == ALLCOLON) {
 			colon = strchr(ptr, ':');
 			if (colon)
 				ptr = colon + 1;
 			else
-				ok = false;
+				return ok;
 		}
-		while (*ptr == ' ')
-			ptr++;
 		comma = strchr(ptr, ',');
 		if (comma)
 			*(comma++) = '\0';
@@ -194,6 +186,7 @@ static bool breakdown(enum breakmode mode, char *buf, int *count, char **firstna
 		ptr = comma;
 	}
 
+	ok = true;
 	return ok;
 }
 
@@ -213,7 +206,7 @@ static bool isokerr(int err, char *buf, int amount)
 	if (err < 0 || amount < (int)BFLSC_OK_LEN)
 		return false;
 	else {
-		if (strncmp(buf, BFLSC_ANERR, BFLSC_ANERR_LEN) == 0)
+		if (strstr(buf, BFLSC_ANERR))
 			return false;
 		else
 			return true;
@@ -277,7 +270,7 @@ static int send_recv_ds(struct cgpu_info *bflsc, int dev, int *stage, bool *sent
 			return err;
 
 		// x-link timeout? - try again?
-		if (strncasecmp(recv, BFLSC_XTIMEOUT, BFLSC_XTIMEOUT_LEN) == 0)
+		if (strstr(recv, BFLSC_XTIMEOUT))
 			continue;
 
 		if (!isokerr(err, recv, *amount))
@@ -302,7 +295,7 @@ static int send_recv_ds(struct cgpu_info *bflsc, int dev, int *stage, bool *sent
 			return err;
 
 		// x-link timeout? - try again?
-		if (strncasecmp(recv, BFLSC_XTIMEOUT, BFLSC_XTIMEOUT_LEN) == 0)
+		if (strstr(recv, BFLSC_XTIMEOUT))
 			continue;
 
 		// SUCCESS - return it
@@ -367,7 +360,7 @@ static int send_recv_ss(struct cgpu_info *bflsc, int dev, bool *sent, int *amoun
 		// TODO: add a usb_read() option to spot the ERR: and convert end=OK<LF> to just <LF>
 		// x-link timeout? - try again?
 		if ((err == LIBUSB_SUCCESS || (read_ok == READ_OK && err == LIBUSB_ERROR_TIMEOUT)) &&
-			strncasecmp(recv, BFLSC_XTIMEOUT, BFLSC_XTIMEOUT_LEN) == 0)
+			strstr(recv, BFLSC_XTIMEOUT))
 				continue;
 
 		// SUCCESS or TIMEOUT - return it
@@ -457,7 +450,7 @@ static bool bflsc_qres(struct cgpu_info *bflsc, char *buf, size_t bufsiz, int de
 
 static void __bflsc_initialise(struct cgpu_info *bflsc)
 {
-	int err;
+	int err, interface;
 
 // TODO: does x-link bypass the other device FTDI? (I think it does)
 //	So no initialisation required except for the master device?
@@ -465,9 +458,10 @@ static void __bflsc_initialise(struct cgpu_info *bflsc)
 	if (bflsc->usbinfo.nodev)
 		return;
 
+	interface = usb_interface(bflsc);
 	// Reset
 	err = usb_transfer(bflsc, FTDI_TYPE_OUT, FTDI_REQUEST_RESET,
-				FTDI_VALUE_RESET, bflsc->usbdev->found->interface, C_RESET);
+				FTDI_VALUE_RESET, interface, C_RESET);
 
 	applog(LOG_DEBUG, "%s%i: reset got err %d",
 		bflsc->drv->name, bflsc->device_id, err);
@@ -482,7 +476,7 @@ static void __bflsc_initialise(struct cgpu_info *bflsc)
 
 	// Set data control
 	err = usb_transfer(bflsc, FTDI_TYPE_OUT, FTDI_REQUEST_DATA,
-				FTDI_VALUE_DATA_BAS, bflsc->usbdev->found->interface, C_SETDATA);
+				FTDI_VALUE_DATA_BAS, interface, C_SETDATA);
 
 	applog(LOG_DEBUG, "%s%i: setdata got err %d",
 		bflsc->drv->name, bflsc->device_id, err);
@@ -492,7 +486,7 @@ static void __bflsc_initialise(struct cgpu_info *bflsc)
 
 	// Set the baud
 	err = usb_transfer(bflsc, FTDI_TYPE_OUT, FTDI_REQUEST_BAUD, FTDI_VALUE_BAUD_BAS,
-				(FTDI_INDEX_BAUD_BAS & 0xff00) | bflsc->usbdev->found->interface,
+				(FTDI_INDEX_BAUD_BAS & 0xff00) | interface,
 				C_SETBAUD);
 
 	applog(LOG_DEBUG, "%s%i: setbaud got err %d",
@@ -503,7 +497,7 @@ static void __bflsc_initialise(struct cgpu_info *bflsc)
 
 	// Set Flow Control
 	err = usb_transfer(bflsc, FTDI_TYPE_OUT, FTDI_REQUEST_FLOW,
-				FTDI_VALUE_FLOW, bflsc->usbdev->found->interface, C_SETFLOW);
+				FTDI_VALUE_FLOW, interface, C_SETFLOW);
 
 	applog(LOG_DEBUG, "%s%i: setflowctrl got err %d",
 		bflsc->drv->name, bflsc->device_id, err);
@@ -513,7 +507,7 @@ static void __bflsc_initialise(struct cgpu_info *bflsc)
 
 	// Set Modem Control
 	err = usb_transfer(bflsc, FTDI_TYPE_OUT, FTDI_REQUEST_MODEM,
-				FTDI_VALUE_MODEM, bflsc->usbdev->found->interface, C_SETMODEM);
+				FTDI_VALUE_MODEM, interface, C_SETMODEM);
 
 	applog(LOG_DEBUG, "%s%i: setmodemctrl got err %d",
 		bflsc->drv->name, bflsc->device_id, err);
@@ -523,7 +517,7 @@ static void __bflsc_initialise(struct cgpu_info *bflsc)
 
 	// Clear any sent data
 	err = usb_transfer(bflsc, FTDI_TYPE_OUT, FTDI_REQUEST_RESET,
-				FTDI_VALUE_PURGE_TX, bflsc->usbdev->found->interface, C_PURGETX);
+				FTDI_VALUE_PURGE_TX, interface, C_PURGETX);
 
 	applog(LOG_DEBUG, "%s%i: purgetx got err %d",
 		bflsc->drv->name, bflsc->device_id, err);
@@ -533,7 +527,7 @@ static void __bflsc_initialise(struct cgpu_info *bflsc)
 
 	// Clear any received data
 	err = usb_transfer(bflsc, FTDI_TYPE_OUT, FTDI_REQUEST_RESET,
-				FTDI_VALUE_PURGE_RX, bflsc->usbdev->found->interface, C_PURGERX);
+				FTDI_VALUE_PURGE_RX, interface, C_PURGERX);
 
 	applog(LOG_DEBUG, "%s%i: purgerx got err %d",
 		bflsc->drv->name, bflsc->device_id, err);
@@ -614,7 +608,8 @@ static bool getinfo(struct cgpu_info *bflsc, int dev)
 		return ok;
 
 	tmp = str_text(buf);
-	strcpy(sc_dev.getinfo, tmp);
+	strncpy(sc_dev.getinfo, tmp, sizeof(sc_dev.getinfo));
+	sc_dev.getinfo[sizeof(sc_dev.getinfo)-1] = '\0';
 	free(tmp);
 
 	for (i = 0; i < lines-2; i++) {
@@ -623,42 +618,50 @@ static bool getinfo(struct cgpu_info *bflsc, int dev)
 			*lf = '\0';
 		if (!res || count != 1) {
 			tmp = str_text(items[i]);
-			applog(LOG_WARNING, "%s detect (%s) invalid details line: '%s' %d",
+			applogsiz(LOG_WARNING, BFLSC_APPLOGSIZ,
+					"%s detect (%s) invalid details line: '%s' %d",
 					bflsc->drv->dname, bflsc->device_path, tmp, count);
 			free(tmp);
 			dev_error(bflsc, REASON_DEV_COMMS_ERROR);
 			goto mata;
 		}
-		if (strcmp(firstname, BFLSC_DI_FIRMWARE) == 0) {
+		if (strstr(firstname, BFLSC_DI_FIRMWARE)) {
 			sc_dev.firmware = strdup(fields[0]);
 			sc_info->driver_version = drv_ver(bflsc, sc_dev.firmware);
 		}
-		else if (strcmp(firstname, BFLSC_DI_ENGINES) == 0) {
+		else if (strstr(firstname, BFLSC_DI_ENGINES)) {
 			sc_dev.engines = atoi(fields[0]);
 			if (sc_dev.engines < 1) {
 				tmp = str_text(items[i]);
-				applog(LOG_WARNING, "%s detect (%s) invalid engine count: '%s'",
-					bflsc->drv->dname, bflsc->device_path, tmp);
+				applogsiz(LOG_WARNING, BFLSC_APPLOGSIZ,
+						"%s detect (%s) invalid engine count: '%s'",
+						bflsc->drv->dname, bflsc->device_path, tmp);
 				free(tmp);
 				goto mata;
 			}
 		}
-		else if (strcmp(firstname, BFLSC_DI_XLINKMODE) == 0)
+		else if (strstr(firstname, BFLSC_DI_XLINKMODE))
 			sc_dev.xlink_mode = strdup(fields[0]);
-		else if (strcmp(firstname, BFLSC_DI_XLINKPRESENT) == 0)
+		else if (strstr(firstname, BFLSC_DI_XLINKPRESENT))
 			sc_dev.xlink_present = strdup(fields[0]);
-		else if (strcmp(firstname, BFLSC_DI_DEVICESINCHAIN) == 0) {
-			sc_info->sc_count = atoi(fields[0]);
+		else if (strstr(firstname, BFLSC_DI_DEVICESINCHAIN)) {
+			if (fields[0][0] == '0' ||
+			    (fields[0][0] == ' ' && fields[0][1] == '0'))
+				sc_info->sc_count = 1;
+			else
+				sc_info->sc_count = atoi(fields[0]);
 			if (sc_info->sc_count < 1 || sc_info->sc_count > 30) {
 				tmp = str_text(items[i]);
-				applog(LOG_WARNING, "%s detect (%s) invalid s-link count: '%s'",
-					bflsc->drv->dname, bflsc->device_path, tmp);
+				applogsiz(LOG_WARNING, BFLSC_APPLOGSIZ,
+						"%s detect (%s) invalid x-link count: '%s'",
+						bflsc->drv->dname, bflsc->device_path, tmp);
 				free(tmp);
 				goto mata;
 			}
-		else if (strcmp(firstname, BFLSC_DI_CHIPS) == 0)
-			sc_dev.chips = strdup(fields[0]);
 		}
+		else if (strstr(firstname, BFLSC_DI_CHIPS))
+			sc_dev.chips = strdup(fields[0]);
+
 		freebreakdown(&count, &firstname, &fields);
 	}
 
@@ -815,6 +818,19 @@ reinit:
 			break;
 	}
 
+	// Set parallelization based on the getinfo() response if it is present
+	if (sc_info->sc_devs[0].chips && strlen(sc_info->sc_devs[0].chips)) {
+		if (strstr(sc_info->sc_devs[0].chips, BFLSC_DI_CHIPS_PARALLEL)) {
+			sc_info->que_noncecount = QUE_NONCECOUNT_V2;
+			sc_info->que_fld_min = QUE_FLD_MIN_V2;
+			sc_info->que_fld_max = QUE_FLD_MAX_V2;
+		} else {
+			sc_info->que_noncecount = QUE_NONCECOUNT_V1;
+			sc_info->que_fld_min = QUE_FLD_MIN_V1;
+			sc_info->que_fld_max = QUE_FLD_MAX_V1;
+		}
+	}
+
 	sc_info->scan_sleep_time = BAS_SCAN_TIME;
 	sc_info->results_sleep_time = BFLSC_RES_TIME;
 	sc_info->default_ms_work = BAS_WORK_TIME;
@@ -895,7 +911,7 @@ shin:
 	return false;
 }
 
-static void bflsc_detect(void)
+static void bflsc_detect(bool __maybe_unused hotplug)
 {
 	usb_detect(&bflsc_drv, bflsc_detect_one);
 }
@@ -932,7 +948,7 @@ static void flush_one_dev(struct cgpu_info *bflsc, int dev)
 	rd_lock(&bflsc->qlock);
 
 	HASH_ITER(hh, bflsc->queued_work, work, tmp) {
-		if (work->queued && work->subid == dev) {
+		if (work->subid == dev) {
 			// devflag is used to flag stale work
 			work->devflag = true;
 			did = true;
@@ -1024,7 +1040,7 @@ static bool bflsc_get_temp(struct cgpu_info *bflsc, int dev)
 		return true;
 	}
 
-	xlinkstr(&(xlink[0]), dev, sc_info);
+	xlinkstr(xlink, sizeof(xlink), dev, sc_info);
 
 	/* It is not very critical getting temp so don't get stuck if we
 	 * can't grab the mutex here */
@@ -1217,7 +1233,8 @@ static void process_nonces(struct cgpu_info *bflsc, int dev, char *xlink, char *
 
 	if (count < sc_info->que_fld_min) {
 		tmp = str_text(data);
-		applog(LOG_INFO, "%s%i:%s work returned too small (%d,%s)",
+		applogsiz(LOG_INFO, BFLSC_APPLOGSIZ,
+				"%s%i:%s work returned too small (%d,%s)",
 				bflsc->drv->name, bflsc->device_id, xlink, count, tmp);
 		free(tmp);
 		inc_hw_errors(bflsc->thr[0]);
@@ -1234,8 +1251,10 @@ static void process_nonces(struct cgpu_info *bflsc, int dev, char *xlink, char *
 	num = atoi(fields[sc_info->que_noncecount]);
 	if (num != count - sc_info->que_fld_min) {
 		tmp = str_text(data);
-		applog(LOG_INFO, "%s%i:%s incorrect data count (%d) will use %d instead from (%s)",
-		       bflsc->drv->name, bflsc->device_id, xlink, num, count - sc_info->que_fld_max, tmp);
+		applogsiz(LOG_INFO, BFLSC_APPLOGSIZ,
+				"%s%i:%s incorrect data count (%d) will use %d instead from (%s)",
+				bflsc->drv->name, bflsc->device_id, xlink, num,
+				count - sc_info->que_fld_max, tmp);
 		free(tmp);
 		inc_hw_errors(bflsc->thr[0]);
 	}
@@ -1250,8 +1269,8 @@ static void process_nonces(struct cgpu_info *bflsc, int dev, char *xlink, char *
 		return;
 	}
 
-	work = find_queued_work_bymidstate(bflsc, midstate, MIDSTATE_BYTES,
-						blockdata, MERKLE_OFFSET, MERKLE_BYTES);
+	work = take_queued_work_bymidstate(bflsc, midstate, MIDSTATE_BYTES,
+					   blockdata, MERKLE_OFFSET, MERKLE_BYTES);
 	if (!work) {
 		if (sc_info->not_first_work) {
 			applog(LOG_INFO, "%s%i:%s failed to find nonce work - can't be processed - ignored",
@@ -1266,8 +1285,9 @@ static void process_nonces(struct cgpu_info *bflsc, int dev, char *xlink, char *
 	for (i = sc_info->que_fld_min; i < count; i++) {
 		if (strlen(fields[i]) != 8) {
 			tmp = str_text(data);
-			applog(LOG_INFO, "%s%i:%s invalid nonce (%s) will try to process anyway",
-			       bflsc->drv->name, bflsc->device_id, xlink, tmp);
+			applogsiz(LOG_INFO, BFLSC_APPLOGSIZ,
+					"%s%i:%s invalid nonce (%s) will try to process anyway",
+					bflsc->drv->name, bflsc->device_id, xlink, tmp);
 			free(tmp);
 		}
 
@@ -1297,53 +1317,59 @@ static void process_nonces(struct cgpu_info *bflsc, int dev, char *xlink, char *
 		sc_info->sc_devs[dev].work_queued -= 1;
 	wr_unlock(&(sc_info->stat_lock));
 
-	work_completed(bflsc, work);
+	free_work(work);
 }
 
-static int process_results(struct cgpu_info *bflsc, int dev, char *buf, int *nonces)
+static int process_results(struct cgpu_info *bflsc, int dev, char *pbuf, int *nonces)
 {
 	struct bflsc_info *sc_info = (struct bflsc_info *)(bflsc->device_data);
 	char **items, *firstname, **fields, *lf;
-	int que, i, lines, count;
+	int que = 0, i, lines, count;
+	char *tmp, *tmp2, *buf;
 	char xlink[17];
-	char *tmp, *tmp2;
+	bool res;
 
 	*nonces = 0;
 
-	xlinkstr(&(xlink[0]), dev, sc_info);
+	xlinkstr(xlink, sizeof(xlink), dev, sc_info);
 
-	tolines(bflsc, dev, buf, &lines, &items, C_GETRESULTS);
-	if (lines < 1) {
-		tmp = str_text(buf);
-		applog(LOG_ERR, "%s%i:%s empty result (%s) ignored",
-					bflsc->drv->name, bflsc->device_id, xlink, tmp);
+	buf = strdup(pbuf);
+	res = tolines(bflsc, dev, buf, &lines, &items, C_GETRESULTS);
+	free(buf);
+	if (!res || lines < 1) {
+		tmp = str_text(pbuf);
+		applogsiz(LOG_ERR, BFLSC_APPLOGSIZ,
+				"%s%i:%s empty result (%s) ignored",
+				bflsc->drv->name, bflsc->device_id, xlink, tmp);
 		free(tmp);
-		que = 0;
 		goto arigatou;
 	}
 
 	if (lines < QUE_RES_LINES_MIN) {
-		tmp = str_text(buf);
-		applog(LOG_ERR, "%s%i:%s result too small (%s) ignored",
-					bflsc->drv->name, bflsc->device_id, xlink, tmp);
+		tmp = str_text(pbuf);
+		applogsiz(LOG_ERR, BFLSC_APPLOGSIZ,
+				"%s%i:%s result of %d too small (%s) ignored",
+				bflsc->drv->name, bflsc->device_id, xlink, lines, tmp);
 		free(tmp);
-		que = 0;
 		goto arigatou;
 	}
 
 	breakdown(ONECOLON, items[1], &count, &firstname, &fields, &lf);
 	if (count < 1) {
-		tmp = str_text(buf);
+		tmp = str_text(pbuf);
 		tmp2 = str_text(items[1]);
-		applog(LOG_ERR, "%s%i:%s empty result count (%s) in (%s) will try anyway",
-					bflsc->drv->name, bflsc->device_id, xlink, tmp2, tmp);
+		applogsiz(LOG_ERR, BFLSC_APPLOGSIZ,
+				"%s%i:%s empty result count (%s) in (%s) ignoring",
+				bflsc->drv->name, bflsc->device_id, xlink, tmp2, tmp);
 		free(tmp2);
 		free(tmp);
+		goto arigatou;
 	} else if (count != 1) {
-		tmp = str_text(buf);
+		tmp = str_text(pbuf);
 		tmp2 = str_text(items[1]);
-		applog(LOG_ERR, "%s%i:%s incorrect result count %d (%s) in (%s) will try anyway",
-					bflsc->drv->name, bflsc->device_id, xlink, count, tmp2, tmp);
+		applogsiz(LOG_ERR, BFLSC_APPLOGSIZ,
+				"%s%i:%s incorrect result count %d (%s) in (%s) will try anyway",
+				bflsc->drv->name, bflsc->device_id, xlink, count, tmp2, tmp);
 		free(tmp2);
 		free(tmp);
 	}
@@ -1354,10 +1380,11 @@ static int process_results(struct cgpu_info *bflsc, int dev, char *buf, int *non
 		// 1+ In case the last line isn't 'OK' - try to process it
 		que = 1 + lines - QUE_RES_LINES_MIN;
 
-		tmp = str_text(buf);
+		tmp = str_text(pbuf);
 		tmp2 = str_text(items[0]);
-		applog(LOG_ERR, "%s%i:%s incorrect result count %d (%s) will try %d (%s)",
-					bflsc->drv->name, bflsc->device_id, xlink, i, tmp2, que, tmp);
+		applogsiz(LOG_ERR, BFLSC_APPLOGSIZ,
+				"%s%i:%s incorrect result count %d (%s) will try %d (%s)",
+				bflsc->drv->name, bflsc->device_id, xlink, i, tmp2, que, tmp);
 		free(tmp2);
 		free(tmp);
 
@@ -1366,8 +1393,13 @@ static int process_results(struct cgpu_info *bflsc, int dev, char *buf, int *non
 	freebreakdown(&count, &firstname, &fields);
 
 	for (i = 0; i < que; i++) {
-		breakdown(NOCOLON, items[i + QUE_RES_LINES_MIN - 1], &count, &firstname, &fields, &lf);
-		process_nonces(bflsc, dev, &(xlink[0]), items[i], count, fields, nonces);
+		res = breakdown(NOCOLON, items[i + QUE_RES_LINES_MIN - 1], &count, &firstname, &fields, &lf);
+		if (likely(res))
+			process_nonces(bflsc, dev, &(xlink[0]), items[i], count, fields, nonces);
+		else
+			applogsiz(LOG_ERR, BFLSC_APPLOGSIZ,
+					"%s%i:%s failed to process nonce %s",
+					bflsc->drv->name, bflsc->device_id, xlink, items[i]);
 		freebreakdown(&count, &firstname, &fields);
 		sc_info->not_first_work = true;
 	}
@@ -1543,7 +1575,7 @@ re_send:
 
 				// Try twice
 				if (try++ < 1 && amount > 1 &&
-					strncasecmp(buf, BFLSC_TIMEOUT, BFLSC_TIMEOUT_LEN) == 0)
+					strstr(buf, BFLSC_TIMEOUT))
 						goto re_send;
 
 				bflsc_applog(bflsc, dev, C_REQUESTQUEJOBSTATUS, amount, err);
@@ -1562,7 +1594,7 @@ re_send:
 
 					// Try twice
 					if (try++ < 1 && amount > 1 &&
-						strncasecmp(buf, BFLSC_TIMEOUT, BFLSC_TIMEOUT_LEN) == 0)
+						strstr(buf, BFLSC_TIMEOUT))
 							goto re_send;
 
 					bflsc_applog(bflsc, dev, C_QUEJOBSTATUS, amount, err);
@@ -1571,46 +1603,6 @@ re_send:
 			}
 			break;
 	}
-
-/*
-	err = write_to_dev(bflsc, dev, BFLSC_QJOB, BFLSC_QJOB_LEN, &amount, C_REQUESTQUEJOB);
-	if (err < 0 || amount != BFLSC_QJOB_LEN) {
-		mutex_unlock(&(bflsc->device_mutex));
-		bflsc_applog(bflsc, dev, C_REQUESTQUEJOB, amount, err);
-		goto out;
-	}
-
-	if (!getok(bflsc, C_REQUESTQUEJOBSTATUS, &err, &amount)) {
-		mutex_unlock(&(bflsc->device_mutex));
-		bflsc_applog(bflsc, dev, C_REQUESTQUEJOBSTATUS, amount, err);
-		goto out;
-	}
-
-	len = sizeof(struct FullNonceRangeJob);
-
-	err = write_to_dev(bflsc, dev, (char *)&data, len, &amount, C_QUEJOB);
-	if (err < 0 || amount != len) {
-		mutex_unlock(&(bflsc->device_mutex));
-		bflsc_applog(bflsc, dev, C_QUEJOB, amount, err);
-		goto out;
-	}
-
-	if (!getokerr(bflsc, C_QUEJOBSTATUS, &err, &amount, buf, sizeof(buf))) {
-		// TODO: check for QUEUE FULL and set work_queued to sc_info->que_size
-		//  and report a code bug LOG_ERR - coz it should never happen
-
-		// Try twice
-		if (try++ < 1 && amount > 1 &&
-			strncasecmp(buf, BFLSC_TIMEOUT, BFLSC_TIMEOUT_LEN) == 0)
-				goto re_send;
-
-		mutex_unlock(&(bflsc->device_mutex));
-		bflsc_applog(bflsc, dev, C_QUEJOBSTATUS, amount, err);
-		goto out;
-	}
-
-	mutex_unlock(&(bflsc->device_mutex));
-*/
 
 	wr_lock(&(sc_info->stat_lock));
 	sc_info->sc_devs[dev].work_queued++;
@@ -1939,7 +1931,7 @@ else a whole lot of something like these ... etc
 }
 
 struct device_drv bflsc_drv = {
-	.drv_id = DRIVER_BFLSC,
+	.drv_id = DRIVER_bflsc,
 	.dname = "BitForceSC",
 	.name = BFLSC_SINGLE,
 	.drv_detect = bflsc_detect,

@@ -696,7 +696,7 @@ static unsigned long mix(unsigned long a, unsigned long b, unsigned long c)
 }
 
 /* Probe devices and register with add_cgpu */
-void knc_detect(void)
+void knc_detect(bool __maybe_unused hotplug)
 {
 	int idx;
 
@@ -807,7 +807,7 @@ static void knc_flush_work(struct cgpu_info *cgpu)
 }
 
 struct device_drv knc_drv = {
-	.drv_id = DRIVER_KNC,
+	.drv_id = DRIVER_knc,
 	.dname = "KnCminer",
 	.name = "KnC",
 	.drv_detect = knc_detect,	// Probe for devices, add with add_cgpu

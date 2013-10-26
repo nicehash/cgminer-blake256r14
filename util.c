@@ -16,7 +16,9 @@
 #include <stdarg.h>
 #include <string.h>
 #include <jansson.h>
+#ifdef HAVE_LIBCURL
 #include <curl/curl.h>
+#endif
 #include <time.h>
 #include <errno.h>
 #include <unistd.h>
@@ -45,6 +47,44 @@
 #define DEFAULT_SOCKWAIT 60
 
 bool successful_connect = false;
+static void keep_sockalive(SOCKETTYPE fd)
+{
+	const int tcp_one = 1;
+#ifndef WIN32
+	const int tcp_keepidle = 45;
+	const int tcp_keepintvl = 30;
+	int flags = fcntl(fd, F_GETFL, 0);
+
+	fcntl(fd, F_SETFL, O_NONBLOCK | flags);
+#else
+	u_long flags = 1;
+
+	ioctlsocket(fd, FIONBIO, &flags);
+#endif
+
+	setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, (const void *)&tcp_one, sizeof(tcp_one));
+	if (!opt_delaynet)
+#ifndef __linux
+		setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (const void *)&tcp_one, sizeof(tcp_one));
+#else /* __linux */
+		setsockopt(fd, SOL_TCP, TCP_NODELAY, (const void *)&tcp_one, sizeof(tcp_one));
+	setsockopt(fd, SOL_TCP, TCP_KEEPCNT, &tcp_one, sizeof(tcp_one));
+	setsockopt(fd, SOL_TCP, TCP_KEEPIDLE, &tcp_keepidle, sizeof(tcp_keepidle));
+	setsockopt(fd, SOL_TCP, TCP_KEEPINTVL, &tcp_keepintvl, sizeof(tcp_keepintvl));
+#endif /* __linux */
+
+#ifdef __APPLE_CC__
+	setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, &tcp_keepintvl, sizeof(tcp_keepintvl));
+#endif /* __APPLE_CC__ */
+
+}
+
+struct tq_ent {
+	void			*data;
+	struct list_head	q_node;
+};
+
+#ifdef HAVE_LIBCURL
 struct timeval nettime;
 
 struct data_buffer {
@@ -65,11 +105,6 @@ struct header_info {
 	bool		hadrolltime;
 	bool		canroll;
 	bool		hadexpire;
-};
-
-struct tq_ent {
-	void			*data;
-	struct list_head	q_node;
 };
 
 static void databuf_free(struct data_buffer *db)
@@ -202,36 +237,19 @@ out:
 	return ptrlen;
 }
 
-static void keep_sockalive(SOCKETTYPE fd)
+static void last_nettime(struct timeval *last)
 {
-	const int tcp_one = 1;
-#ifndef WIN32
-	const int tcp_keepidle = 45;
-	const int tcp_keepintvl = 30;
-	int flags = fcntl(fd, F_GETFL, 0);
+	rd_lock(&netacc_lock);
+	last->tv_sec = nettime.tv_sec;
+	last->tv_usec = nettime.tv_usec;
+	rd_unlock(&netacc_lock);
+}
 
-	fcntl(fd, F_SETFL, O_NONBLOCK | flags);
-#else
-	u_long flags = 1;
-
-	ioctlsocket(fd, FIONBIO, &flags);
-#endif
-
-	setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, (const void *)&tcp_one, sizeof(tcp_one));
-	if (!opt_delaynet)
-#ifndef __linux
-		setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (const void *)&tcp_one, sizeof(tcp_one));
-#else /* __linux */
-		setsockopt(fd, SOL_TCP, TCP_NODELAY, (const void *)&tcp_one, sizeof(tcp_one));
-	setsockopt(fd, SOL_TCP, TCP_KEEPCNT, &tcp_one, sizeof(tcp_one));
-	setsockopt(fd, SOL_TCP, TCP_KEEPIDLE, &tcp_keepidle, sizeof(tcp_keepidle));
-	setsockopt(fd, SOL_TCP, TCP_KEEPINTVL, &tcp_keepintvl, sizeof(tcp_keepintvl));
-#endif /* __linux */
-
-#ifdef __APPLE_CC__
-	setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, &tcp_keepintvl, sizeof(tcp_keepintvl));
-#endif /* __APPLE_CC__ */
-
+static void set_nettime(void)
+{
+	wr_lock(&netacc_lock);
+	cgtime(&nettime);
+	wr_unlock(&netacc_lock);
 }
 
 #if CURL_HAS_KEEPALIVE
@@ -254,21 +272,6 @@ static void keep_curlalive(CURL *curl)
 	keep_sockalive(sock);
 }
 #endif
-
-static void last_nettime(struct timeval *last)
-{
-	rd_lock(&netacc_lock);
-	last->tv_sec = nettime.tv_sec;
-	last->tv_usec = nettime.tv_usec;
-	rd_unlock(&netacc_lock);
-}
-
-static void set_nettime(void)
-{
-	wr_lock(&netacc_lock);
-	cgtime(&nettime);
-	wr_unlock(&netacc_lock);
-}
 
 static int curl_debug_cb(__maybe_unused CURL *handle, curl_infotype type,
 			 __maybe_unused char *data, size_t size, void *userdata)
@@ -513,29 +516,35 @@ err_out:
 	curl_easy_setopt(curl, CURLOPT_FRESH_CONNECT, 1);
 	return NULL;
 }
+#define PROXY_HTTP	CURLPROXY_HTTP
+#define PROXY_HTTP_1_0	CURLPROXY_HTTP_1_0
+#define PROXY_SOCKS4	CURLPROXY_SOCKS4
+#define PROXY_SOCKS5	CURLPROXY_SOCKS5
+#define PROXY_SOCKS4A	CURLPROXY_SOCKS4A
+#define PROXY_SOCKS5H	CURLPROXY_SOCKS5_HOSTNAME
+#else /* HAVE_LIBCURL */
+#define PROXY_HTTP	0
+#define PROXY_HTTP_1_0	1
+#define PROXY_SOCKS4	2
+#define PROXY_SOCKS5	3
+#define PROXY_SOCKS4A	4
+#define PROXY_SOCKS5H	5
+#endif /* HAVE_LIBCURL */
 
-#if (LIBCURL_VERSION_MAJOR == 7 && LIBCURL_VERSION_MINOR >= 10) || (LIBCURL_VERSION_MAJOR > 7)
 static struct {
 	const char *name;
-	curl_proxytype proxytype;
+	proxytypes_t proxytype;
 } proxynames[] = {
-	{ "http:",	CURLPROXY_HTTP },
-#if (LIBCURL_VERSION_MAJOR > 7) || (LIBCURL_VERSION_MINOR > 19) || (LIBCURL_VERSION_MINOR == 19 && LIBCURL_VERSION_PATCH >= 4)
-	{ "http0:",	CURLPROXY_HTTP_1_0 },
-#endif
-#if (LIBCURL_VERSION_MAJOR > 7) || (LIBCURL_VERSION_MINOR > 15) || (LIBCURL_VERSION_MINOR == 15 && LIBCURL_VERSION_PATCH >= 2)
-	{ "socks4:",	CURLPROXY_SOCKS4 },
-#endif
-	{ "socks5:",	CURLPROXY_SOCKS5 },
-#if (LIBCURL_VERSION_MAJOR > 7) || (LIBCURL_VERSION_MINOR >= 18)
-	{ "socks4a:",	CURLPROXY_SOCKS4A },
-	{ "socks5h:",	CURLPROXY_SOCKS5_HOSTNAME },
-#endif
+	{ "http:",	PROXY_HTTP },
+	{ "http0:",	PROXY_HTTP_1_0 },
+	{ "socks4:",	PROXY_SOCKS4 },
+	{ "socks5:",	PROXY_SOCKS5 },
+	{ "socks4a:",	PROXY_SOCKS4A },
+	{ "socks5h:",	PROXY_SOCKS5H },
 	{ NULL,	0 }
 };
-#endif
 
-const char *proxytype(curl_proxytype proxytype)
+const char *proxytype(proxytypes_t proxytype)
 {
 	int i;
 
@@ -550,7 +559,6 @@ char *get_proxy(char *url, struct pool *pool)
 {
 	pool->rpc_proxy = NULL;
 
-#if (LIBCURL_VERSION_MAJOR == 7 && LIBCURL_VERSION_MINOR >= 10) || (LIBCURL_VERSION_MAJOR > 7)
 	char *split;
 	int plen, len, i;
 
@@ -567,24 +575,35 @@ char *get_proxy(char *url, struct pool *pool)
 				quithere(1, "Failed to malloc rpc_proxy");
 
 			strcpy(pool->rpc_proxy, url + plen);
+			extract_sockaddr(pool->rpc_proxy, &pool->sockaddr_proxy_url, &pool->sockaddr_proxy_port);
 			pool->rpc_proxytype = proxynames[i].proxytype;
 			url = split + 1;
 			break;
 		}
 	}
-#endif
 	return url;
+}
+
+/* Adequate size s==len*2 + 1 must be alloced to use this variant */
+void __bin2hex(char *s, const unsigned char *p, size_t len)
+{
+	int i;
+	static const char hex[16] = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
+
+	for (i = 0; i < (int)len; i++) {
+		*s++ = hex[p[i] >> 4];
+		*s++ = hex[p[i] & 0xF];
+	}
+	*s++ = '\0';
 }
 
 /* Returns a malloced array string of a binary value of arbitrary length. The
  * array is rounded up to a 4 byte size to appease architectures that need
  * aligned array  sizes */
-static char hex[16] = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
 char *bin2hex(const unsigned char *p, size_t len)
 {
 	ssize_t slen;
-	char *s, *sr;
-	int i;
+	char *s;
 
 	slen = len * 2 + 1;
 	if (slen % 4)
@@ -593,16 +612,13 @@ char *bin2hex(const unsigned char *p, size_t len)
 	if (unlikely(!s))
 		quithere(1, "Failed to calloc");
 
-	for (i = 0, sr = s; i < len; ++i) {
-		*sr++ = hex[p[i] >> 4];
-		*sr++ = hex[p[i] & 0xF];
-	}
+	__bin2hex(s, p, len);
 
 	return s;
 }
 
 /* Does the reverse of bin2hex but does not allocate any ram */
-static int hex2bin_tbl[256] = {
+static const int hex2bin_tbl[256] = {
 	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
 	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
 	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
@@ -822,14 +838,6 @@ void thr_info_cancel(struct thr_info *thr)
 	cgsem_destroy(&thr->sem);
 }
 
-/* This is a cgminer gettimeofday wrapper. Since we always call gettimeofday
- * with tz set to NULL, and windows' default resolution is only 15ms, this
- * gives us higher resolution times on windows. */
-void cgtime(struct timeval *tv)
-{
-	gettimeofday(tv, NULL);
-}
-
 void subtime(struct timeval *a, struct timeval *b)
 {
 	timersub(a, b, b);
@@ -891,6 +899,14 @@ void ms_to_timespec(struct timespec *spec, int64_t ms)
 	spec->tv_nsec = tvdiv.rem * 1000000;
 }
 
+void ms_to_timeval(struct timeval *val, int64_t ms)
+{
+	lldiv_t tvdiv = lldiv(ms, 1000);
+
+	val->tv_sec = tvdiv.quot;
+	val->tv_usec = tvdiv.rem * 1000;
+}
+
 void timeraddspec(struct timespec *a, const struct timespec *b)
 {
 	a->tv_sec += b->tv_sec;
@@ -901,9 +917,79 @@ void timeraddspec(struct timespec *a, const struct timespec *b)
 	}
 }
 
+static int __maybe_unused timespec_to_ms(struct timespec *ts)
+{
+	return ts->tv_sec * 1000 + ts->tv_nsec / 1000000;
+}
+
+/* Subtract b from a */
+static void __maybe_unused timersubspec(struct timespec *a, const struct timespec *b)
+{
+	a->tv_sec -= b->tv_sec;
+	a->tv_nsec -= b->tv_nsec;
+	if (a->tv_nsec < 0) {
+		a->tv_nsec += 1000000000;
+		a->tv_sec--;
+	}
+}
+
 /* These are cgminer specific sleep functions that use an absolute nanosecond
  * resolution timer to avoid poor usleep accuracy and overruns. */
-#ifndef WIN32
+#ifdef WIN32
+/* Windows start time is since 1601 LOL so convert it to unix epoch 1970. */
+#define EPOCHFILETIME (116444736000000000LL)
+
+/* Return the system time as an lldiv_t in decimicroseconds. */
+static void decius_time(lldiv_t *lidiv)
+{
+	FILETIME ft;
+	LARGE_INTEGER li;
+
+	GetSystemTimeAsFileTime(&ft);
+	li.LowPart  = ft.dwLowDateTime;
+	li.HighPart = ft.dwHighDateTime;
+	li.QuadPart -= EPOCHFILETIME;
+
+	/* SystemTime is in decimicroseconds so divide by an unusual number */
+	*lidiv = lldiv(li.QuadPart, 10000000);
+}
+
+/* This is a cgminer gettimeofday wrapper. Since we always call gettimeofday
+ * with tz set to NULL, and windows' default resolution is only 15ms, this
+ * gives us higher resolution times on windows. */
+void cgtime(struct timeval *tv)
+{
+	lldiv_t lidiv;
+
+	decius_time(&lidiv);
+	tv->tv_sec = lidiv.quot;
+	tv->tv_usec = lidiv.rem / 10;
+}
+
+#else /* WIN32 */
+void cgtime(struct timeval *tv)
+{
+	gettimeofday(tv, NULL);
+}
+
+int cgtimer_to_ms(cgtimer_t *cgt)
+{
+	return timespec_to_ms(cgt);
+}
+
+/* Subtracts b from a and stores it in res. */
+void cgtimer_sub(cgtimer_t *a, cgtimer_t *b, cgtimer_t *res)
+{
+	res->tv_sec = a->tv_sec - b->tv_sec;
+	res->tv_nsec = a->tv_nsec - b->tv_nsec;
+	if (res->tv_nsec < 0) {
+		res->tv_nsec += 1000000000;
+		res->tv_sec--;
+	}
+}
+#endif /* WIN32 */
+
+#ifdef CLOCK_MONOTONIC /* Essentially just linux */
 void cgtimer_time(cgtimer_t *ts_start)
 {
 	clock_gettime(CLOCK_MONOTONIC, ts_start);
@@ -938,78 +1024,126 @@ void cgsleep_us_r(cgtimer_t *ts_start, int64_t us)
 	timeraddspec(&ts_end, ts_start);
 	nanosleep_abstime(&ts_end);
 }
-
-static int timespec_to_ms(struct timespec *ts)
+#else /* CLOCK_MONOTONIC */
+#ifdef __MACH__
+#include <mach/clock.h>
+#include <mach/mach.h>
+void cgtimer_time(cgtimer_t *ts_start)
 {
-	return ts->tv_sec * 1000 + ts->tv_nsec / 1000000;
-}
+	clock_serv_t cclock;
+	mach_timespec_t mts;
 
+	host_get_clock_service(mach_host_self(), SYSTEM_CLOCK, &cclock);
+	clock_get_time(cclock, &mts);
+	mach_port_deallocate(mach_task_self(), cclock);
+	ts_start->tv_sec = mts.tv_sec;
+	ts_start->tv_nsec = mts.tv_nsec;
+}
+#elif !defined(WIN32) /* __MACH__ - Everything not linux/macosx/win32 */
+void cgtimer_time(cgtimer_t *ts_start)
+{
+	struct timeval tv;
+
+	cgtime(&tv);
+	ts_start->tv_sec = tv->tv_sec;
+	ts_start->tv_nsec = tv->tv_usec * 1000;
+}
+#endif /* __MACH__ */
+
+#ifdef WIN32
+/* For windows we use the SystemTime stored as a LARGE_INTEGER as the cgtimer_t
+ * typedef, allowing us to have sub-microsecond resolution for times, do simple
+ * arithmetic for timer calculations, and use windows' own hTimers to get
+ * accurate absolute timeouts. */
 int cgtimer_to_ms(cgtimer_t *cgt)
 {
-	return timespec_to_ms(cgt);
+	return (int)(cgt->QuadPart / 10000LL);
 }
 
 /* Subtracts b from a and stores it in res. */
 void cgtimer_sub(cgtimer_t *a, cgtimer_t *b, cgtimer_t *res)
 {
-	res->tv_sec = a->tv_sec - b->tv_sec;
-	res->tv_nsec = a->tv_nsec - b->tv_nsec;
-	if (res->tv_nsec < 0) {
-		res->tv_nsec += 1000000000;
-		res->tv_sec--;
-	}
+	res->QuadPart = a->QuadPart - b->QuadPart;
 }
-#else
+
+/* Note that cgtimer time is NOT offset by the unix epoch since we use absolute
+ * timeouts with hTimers. */
 void cgtimer_time(cgtimer_t *ts_start)
 {
-	cgtime(ts_start);
+	FILETIME ft;
+
+	GetSystemTimeAsFileTime(&ft);
+	ts_start->LowPart = ft.dwLowDateTime;
+	ts_start->HighPart = ft.dwHighDateTime;
 }
 
-static void ms_to_timeval(struct timeval *val, int ms)
+static void liSleep(LARGE_INTEGER *li, int timeout)
 {
-	ldiv_t tvdiv = ldiv(ms, 1000);
+	HANDLE hTimer = CreateWaitableTimer(NULL, TRUE, NULL);
+	DWORD ret;
 
-	val->tv_sec = tvdiv.quot;
-	val->tv_usec = tvdiv.rem * 1000;
+	if (unlikely(!hTimer))
+		quit(1, "Failed to create hTimer in liSleep");
+	ret = SetWaitableTimer(hTimer, li, 0, NULL, NULL, 0);
+	if (unlikely(!ret))
+		quit(1, "Failed to SetWaitableTimer in liSleep");
+	/* We still use a timeout as a sanity check in case the system time
+	 * is changed while we're running */
+	ret = WaitForSingleObject(hTimer, timeout);
+	if (unlikely(ret != WAIT_OBJECT_0 && ret != WAIT_TIMEOUT))
+		quit(1, "Failed to WaitForSingleObject in liSleep");
+	CloseHandle(hTimer);
 }
 
 void cgsleep_ms_r(cgtimer_t *ts_start, int ms)
 {
-	struct timeval now, tv_end, tv_diff;
-	struct timespec ts_diff;
+	LARGE_INTEGER li;
 
-	ms_to_timeval(&tv_diff, ms);
-	timeradd(ts_start, &tv_diff, &tv_end);
-	cgtime(&now);
-	if (unlikely(time_more(&now, &tv_end)))
-		return;
-	timersub(&tv_end, &now, &tv_diff);
-	timeval_to_spec(&ts_diff, &tv_diff);
-	nanosleep(&ts_diff, NULL);
+	li.QuadPart = ts_start->QuadPart + (int64_t)ms * 10000LL;
+	liSleep(&li, ms);
 }
 
 void cgsleep_us_r(cgtimer_t *ts_start, int64_t us)
 {
-	int ms = us / 1000;
+	LARGE_INTEGER li;
+	int ms;
 
-	cgsleep_ms_r(ts_start, ms);
+	li.QuadPart = ts_start->QuadPart + us * 10LL;
+	ms = us / 1000;
+	if (!ms)
+		ms = 1;
+	liSleep(&li, ms);
 }
-
-static int timeval_to_ms(struct timeval *tv)
+#else /* WIN32 */
+static void cgsleep_spec(struct timespec *ts_diff, const struct timespec *ts_start)
 {
-	return tv->tv_sec * 1000 + tv->tv_usec / 1000;
+	struct timespec now;
+
+	timeraddspec(ts_diff, ts_start);
+	cgtimer_time(&now);
+	timersubspec(ts_diff, &now);
+	if (unlikely(ts_diff->tv_sec < 0))
+		return;
+	nanosleep(ts_diff, NULL);
 }
 
-int cgtimer_to_ms(cgtimer_t *cgt)
+void cgsleep_ms_r(cgtimer_t *ts_start, int ms)
 {
-	return timeval_to_ms(cgt);
+	struct timespec ts_diff;
+
+	ms_to_timespec(&ts_diff, ms);
+	cgsleep_spec(&ts_diff, ts_start);
 }
 
-void cgtimer_sub(cgtimer_t *a, cgtimer_t *b, cgtimer_t *res)
+void cgsleep_us_r(cgtimer_t *ts_start, int64_t us)
 {
-	timersub(a, b, res);
+	struct timespec ts_diff;
+
+	us_to_timespec(&ts_diff, us);
+	cgsleep_spec(&ts_diff, ts_start);
 }
-#endif
+#endif /* WIN32 */
+#endif /* CLOCK_MONOTONIC */
 
 void cgsleep_ms(int ms)
 {
@@ -1030,7 +1164,20 @@ void cgsleep_us(int64_t us)
 /* Returns the microseconds difference between end and start times as a double */
 double us_tdiff(struct timeval *end, struct timeval *start)
 {
-	return end->tv_sec * 1000000 + end->tv_usec - start->tv_sec * 1000000 - start->tv_usec;
+	/* Sanity check. We should only be using this for small differences so
+	 * limit the max to 60 seconds. */
+	if (unlikely(end->tv_sec - start->tv_sec > 60))
+		return 60000000;
+	return (end->tv_sec - start->tv_sec) * 1000000 + (end->tv_usec - start->tv_usec);
+}
+
+/* Returns the milliseconds difference between end and start times */
+int ms_tdiff(struct timeval *end, struct timeval *start)
+{
+	/* Like us_tdiff, limit to 1 hour. */
+	if (unlikely(end->tv_sec - start->tv_sec > 3600))
+		return 3600000;
+	return (end->tv_sec - start->tv_sec) * 1000 + (end->tv_usec - start->tv_usec) / 1000;
 }
 
 /* Returns the seconds difference between end and start times as a double */
@@ -1039,13 +1186,13 @@ double tdiff(struct timeval *end, struct timeval *start)
 	return end->tv_sec - start->tv_sec + (end->tv_usec - start->tv_usec) / 1000000.0;
 }
 
-bool extract_sockaddr(struct pool *pool, char *url)
+bool extract_sockaddr(char *url, char **sockaddr_url, char **sockaddr_port)
 {
 	char *url_begin, *url_end, *ipv6_begin, *ipv6_end, *port_start = NULL;
 	char url_address[256], port[6];
 	int url_len, port_len = 0;
 
-	pool->sockaddr_url = url;
+	*sockaddr_url = url;
 	url_begin = strstr(url, "//");
 	if (!url_begin)
 		url_begin = url;
@@ -1073,13 +1220,18 @@ bool extract_sockaddr(struct pool *pool, char *url)
 
 	sprintf(url_address, "%.*s", url_len, url_begin);
 
-	if (port_len)
+	if (port_len) {
+		char *slash;
+
 		snprintf(port, 6, "%.*s", port_len, port_start);
-	else
+		slash = strchr(port, '/');
+		if (slash)
+			*slash = '\0';
+	} else
 		strcpy(port, "80");
 
-	pool->stratum_port = strdup(port);
-	pool->sockaddr_url = strdup(url_address);
+	*sockaddr_port = strdup(port);
+	*sockaddr_url = strdup(url_address);
 
 	return true;
 }
@@ -1476,6 +1628,8 @@ static bool parse_notify(struct pool *pool, json_t *val)
 	pool->getwork_requested++;
 	total_getworks++;
 	ret = true;
+	if (pool == current_pool())
+		opt_work_update = true;
 out:
 	return ret;
 }
@@ -1524,7 +1678,7 @@ static bool parse_reconnect(struct pool *pool, json_t *val)
 
 	sprintf(address, "%s:%s", url, port);
 
-	if (!extract_sockaddr(pool, address))
+	if (!extract_sockaddr(address, &pool->sockaddr_url, &pool->stratum_port))
 		return false;
 
 	pool->stratum_url = pool->sockaddr_url;
@@ -1573,17 +1727,17 @@ bool parse_method(struct pool *pool, char *s)
 	char *buf;
 
 	if (!s)
-		goto out;
+		return ret;
 
 	val = JSON_LOADS(s, &err);
 	if (!val) {
 		applog(LOG_INFO, "JSON decode failed(%d): %s", err.line, err.text);
-		goto out;
+		return ret;
 	}
 
 	method = json_object_get(val, "method");
 	if (!method)
-		goto out;
+		return ret;
 	err_val = json_object_get(val, "error");
 	params = json_object_get(val, "params");
 
@@ -1599,44 +1753,40 @@ bool parse_method(struct pool *pool, char *s)
 
 		free(ss);
 
-		goto out;
+		return ret;
 	}
 
 	buf = (char *)json_string_value(method);
 	if (!buf)
-		goto out;
+		return ret;
 
 	if (!strncasecmp(buf, "mining.notify", 13)) {
 		if (parse_notify(pool, params))
 			pool->stratum_notify = ret = true;
 		else
 			pool->stratum_notify = ret = false;
-		goto out;
+		return ret;
 	}
 
 	if (!strncasecmp(buf, "mining.set_difficulty", 21) && parse_diff(pool, params)) {
 		ret = true;
-		goto out;
+		return ret;
 	}
 
 	if (!strncasecmp(buf, "client.reconnect", 16) && parse_reconnect(pool, params)) {
 		ret = true;
-		goto out;
+		return ret;
 	}
 
 	if (!strncasecmp(buf, "client.get_version", 18) && send_version(pool, val)) {
 		ret = true;
-		goto out;
+		return ret;
 	}
 
 	if (!strncasecmp(buf, "client.show_message", 19) && show_message(pool, params)) {
 		ret = true;
-		goto out;
+		return ret;
 	}
-out:
-	if (val)
-		json_decref(val);
-
 	return ret;
 }
 
@@ -1651,13 +1801,13 @@ bool auth_stratum(struct pool *pool)
 		swork_id++, pool->rpc_user, pool->rpc_pass);
 
 	if (!stratum_send(pool, s, strlen(s)))
-		goto out;
+		return ret;
 
 	/* Parse all data in the queue and anything left should be auth */
 	while (42) {
 		sret = recv_line(pool);
 		if (!sret)
-			goto out;
+			return ret;
 		if (parse_method(pool, sret))
 			free(sret);
 		else
@@ -1679,23 +1829,222 @@ bool auth_stratum(struct pool *pool)
 		applog(LOG_WARNING, "pool %d JSON stratum auth failed: %s", pool->pool_no, ss);
 		free(ss);
 
-		goto out;
+		return ret;
 	}
 
 	ret = true;
 	applog(LOG_INFO, "Stratum authorisation success for pool %d", pool->pool_no);
 	pool->probed = true;
 	successful_connect = true;
-out:
-	if (val)
-		json_decref(val);
-
 	return ret;
+}
+
+static int recv_byte(int sockd)
+{
+	char c;
+
+	if (recv(sockd, &c, 1, 0) != -1)
+		return c;
+
+	return -1;
+}
+
+static bool http_negotiate(struct pool *pool, int sockd, bool http0)
+{
+	char buf[1024];
+	int i, len;
+
+	if (http0) {
+		snprintf(buf, 1024, "CONNECT %s:%s HTTP/1.0\r\n\r\n",
+			pool->sockaddr_url, pool->stratum_port);
+	} else {
+		snprintf(buf, 1024, "CONNECT %s:%s HTTP/1.1\r\nHost: %s:%s\r\n\r\n",
+			pool->sockaddr_url, pool->stratum_port, pool->sockaddr_url,
+			pool->stratum_port);
+	}
+	applog(LOG_DEBUG, "Sending proxy %s:%s - %s",
+		pool->sockaddr_proxy_url, pool->sockaddr_proxy_port, buf);
+	send(sockd, buf, strlen(buf), 0);
+	len = recv(sockd, buf, 12, 0);
+	if (len <= 0) {
+		applog(LOG_WARNING, "Couldn't read from proxy %s:%s after sending CONNECT",
+		       pool->sockaddr_proxy_url, pool->sockaddr_proxy_port);
+		return false;
+	}
+	buf[len] = '\0';
+	applog(LOG_DEBUG, "Received from proxy %s:%s - %s",
+	       pool->sockaddr_proxy_url, pool->sockaddr_proxy_port, buf);
+	if (strcmp(buf, "HTTP/1.1 200") && strcmp(buf, "HTTP/1.0 200")) {
+		applog(LOG_WARNING, "HTTP Error from proxy %s:%s - %s",
+		       pool->sockaddr_proxy_url, pool->sockaddr_proxy_port, buf);
+		return false;
+	}
+
+	/* Ignore unwanted headers till we get desired response */
+	for (i = 0; i < 4; i++) {
+		buf[i] = recv_byte(sockd);
+		if (buf[i] == (char)-1) {
+			applog(LOG_WARNING, "Couldn't read HTTP byte from proxy %s:%s",
+			pool->sockaddr_proxy_url, pool->sockaddr_proxy_port);
+			return false;
+		}
+	}
+	while (strncmp(buf, "\r\n\r\n", 4)) {
+		for (i = 0; i < 3; i++)
+			buf[i] = buf[i + 1];
+		buf[3] = recv_byte(sockd);
+		if (buf[3] == (char)-1) {
+			applog(LOG_WARNING, "Couldn't read HTTP byte from proxy %s:%s",
+			pool->sockaddr_proxy_url, pool->sockaddr_proxy_port);
+			return false;
+		}
+	}
+
+	applog(LOG_DEBUG, "Success negotiating with %s:%s HTTP proxy",
+	       pool->sockaddr_proxy_url, pool->sockaddr_proxy_port);
+	return true;
+}
+
+static bool socks5_negotiate(struct pool *pool, int sockd)
+{
+	unsigned char atyp, uclen;
+	unsigned short port;
+	char buf[515];
+	int i, len;
+
+	buf[0] = 0x05;
+	buf[1] = 0x01;
+	buf[2] = 0x00;
+	applog(LOG_DEBUG, "Attempting to negotiate with %s:%s SOCKS5 proxy",
+	       pool->sockaddr_proxy_url, pool->sockaddr_proxy_port );
+	send(sockd, buf, 3, 0);
+	if (recv_byte(sockd) != 0x05 || recv_byte(sockd) != buf[2]) {
+		applog(LOG_WARNING, "Bad response from %s:%s SOCKS5 server",
+		       pool->sockaddr_proxy_url, pool->sockaddr_proxy_port );
+		return false;
+	}
+
+	buf[0] = 0x05;
+	buf[1] = 0x01;
+	buf[2] = 0x00;
+	buf[3] = 0x03;
+	len = (strlen(pool->sockaddr_url));
+	if (len > 255)
+		len = 255;
+	uclen = len;
+	buf[4] = (uclen & 0xff);
+	memcpy(buf + 5, pool->sockaddr_url, len);
+	port = atoi(pool->stratum_port);
+	buf[5 + len] = (port >> 8);
+	buf[6 + len] = (port & 0xff);
+	send(sockd, buf, (7 + len), 0);
+	if (recv_byte(sockd) != 0x05 || recv_byte(sockd) != 0x00) {
+		applog(LOG_WARNING, "Bad response from %s:%s SOCKS5 server",
+			pool->sockaddr_proxy_url, pool->sockaddr_proxy_port );
+		return false;
+	}
+
+	recv_byte(sockd);
+	atyp = recv_byte(sockd);
+	if (atyp == 0x01) {
+		for (i = 0; i < 4; i++)
+			recv_byte(sockd);
+	} else if (atyp == 0x03) {
+		len = recv_byte(sockd);
+		for (i = 0; i < len; i++)
+			recv_byte(sockd);
+	} else {
+		applog(LOG_WARNING, "Bad response from %s:%s SOCKS5 server",
+			pool->sockaddr_proxy_url, pool->sockaddr_proxy_port );
+		return false;
+	}
+	for (i = 0; i < 2; i++)
+		recv_byte(sockd);
+
+	applog(LOG_DEBUG, "Success negotiating with %s:%s SOCKS5 proxy",
+	       pool->sockaddr_proxy_url, pool->sockaddr_proxy_port);
+	return true;
+}
+
+static bool socks4_negotiate(struct pool *pool, int sockd, bool socks4a)
+{
+	unsigned short port;
+	in_addr_t inp;
+	char buf[515];
+	int i, len;
+
+	buf[0] = 0x04;
+	buf[1] = 0x01;
+	port = atoi(pool->stratum_port);
+	buf[2] = port >> 8;
+	buf[3] = port & 0xff;
+	sprintf(&buf[8], "CGMINER");
+
+	/* See if we've been given an IP address directly to avoid needing to
+	 * resolve it. */
+	inp = inet_addr(pool->sockaddr_url);
+	inp = ntohl(inp);
+	if ((int)inp != -1)
+		socks4a = false;
+	else {
+		/* Try to extract the IP address ourselves first */
+		struct addrinfo servinfobase, *servinfo, hints;
+
+		servinfo = &servinfobase;
+		memset(&hints, 0, sizeof(struct addrinfo));
+		hints.ai_family = AF_INET; /* IPV4 only */
+		if (!getaddrinfo(pool->sockaddr_url, NULL, &hints, &servinfo)) {
+			struct sockaddr_in *saddr_in = (struct sockaddr_in *)servinfo->ai_addr;
+
+			inp = ntohl(saddr_in->sin_addr.s_addr);
+			socks4a = false;
+			freeaddrinfo(servinfo);
+		}
+	}
+
+	if (!socks4a) {
+		if ((int)inp == -1) {
+			applog(LOG_WARNING, "Invalid IP address specified for socks4 proxy: %s",
+			       pool->sockaddr_url);
+			return false;
+		}
+		buf[4] = (inp >> 24) & 0xFF;
+		buf[5] = (inp >> 16) & 0xFF;
+		buf[6] = (inp >>  8) & 0xFF;
+		buf[7] = (inp >>  0) & 0xFF;
+		send(sockd, buf, 16, 0);
+	} else {
+		/* This appears to not be working but hopefully most will be
+		 * able to resolve IP addresses themselves. */
+		buf[4] = 0;
+		buf[5] = 0;
+		buf[6] = 0;
+		buf[7] = 1;
+		len = strlen(pool->sockaddr_url);
+		if (len > 255)
+			len = 255;
+		memcpy(&buf[16], pool->sockaddr_url, len);
+		len += 16;
+		buf[len++] = '\0';
+		send(sockd, buf, len, 0);
+	}
+
+	if (recv_byte(sockd) != 0x00 || recv_byte(sockd) != 0x5a) {
+		applog(LOG_WARNING, "Bad response from %s:%s SOCKS4 server",
+		       pool->sockaddr_proxy_url, pool->sockaddr_proxy_port);
+		return false;
+	}
+
+	for (i = 0; i < 6; i++)
+		recv_byte(sockd);
+
+	return true;
 }
 
 static bool setup_stratum_socket(struct pool *pool)
 {
-	struct addrinfo *servinfo, *hints, *p;
+	struct addrinfo servinfobase, *servinfo, *hints, *p;
+	char *sockaddr_url, *sockaddr_port;
 	int sockd;
 
 	mutex_lock(&pool->stratum_lock);
@@ -1709,14 +2058,29 @@ static bool setup_stratum_socket(struct pool *pool)
 	memset(hints, 0, sizeof(struct addrinfo));
 	hints->ai_family = AF_UNSPEC;
 	hints->ai_socktype = SOCK_STREAM;
-	if (getaddrinfo(pool->sockaddr_url, pool->stratum_port, hints, &servinfo) != 0) {
+	servinfo = &servinfobase;
+
+	if (!pool->rpc_proxy && opt_socks_proxy) {
+		pool->rpc_proxy = opt_socks_proxy;
+		extract_sockaddr(pool->rpc_proxy, &pool->sockaddr_proxy_url, &pool->sockaddr_proxy_port);
+		pool->rpc_proxytype = PROXY_SOCKS5;
+	}
+
+	if (pool->rpc_proxy) {
+		sockaddr_url = pool->sockaddr_proxy_url;
+		sockaddr_port = pool->sockaddr_proxy_port;
+	} else {
+		sockaddr_url = pool->sockaddr_url;
+		sockaddr_port = pool->stratum_port;
+	}
+	if (getaddrinfo(sockaddr_url, sockaddr_port, hints, &servinfo) != 0) {
 		if (!pool->probed) {
 			applog(LOG_WARNING, "Failed to resolve (?wrong URL) %s:%s",
-			       pool->sockaddr_url, pool->stratum_port);
+			       sockaddr_url, sockaddr_port);
 			pool->probed = true;
 		} else {
 			applog(LOG_INFO, "Failed to getaddrinfo for %s:%s",
-			       pool->sockaddr_url, pool->stratum_port);
+			       sockaddr_url, sockaddr_port);
 		}
 		return false;
 	}
@@ -1737,12 +2101,43 @@ static bool setup_stratum_socket(struct pool *pool)
 		break;
 	}
 	if (p == NULL) {
-		applog(LOG_INFO, "Failed to find a stratum servinfo on %s:%s",
-		       pool->sockaddr_url, pool->stratum_port);
+		applog(LOG_INFO, "Failed to connect to stratum on %s:%s",
+		       sockaddr_url, sockaddr_port);
 		freeaddrinfo(servinfo);
 		return false;
 	}
 	freeaddrinfo(servinfo);
+
+	if (pool->rpc_proxy) {
+		switch (pool->rpc_proxytype) {
+			case PROXY_HTTP_1_0:
+				if (!http_negotiate(pool, sockd, true))
+					return false;
+				break;
+			case PROXY_HTTP:
+				if (!http_negotiate(pool, sockd, false))
+					return false;
+				break;
+			case PROXY_SOCKS5:
+			case PROXY_SOCKS5H:
+				if (!socks5_negotiate(pool, sockd))
+					return false;
+				break;
+			case PROXY_SOCKS4:
+				if (!socks4_negotiate(pool, sockd, false))
+					return false;
+				break;
+			case PROXY_SOCKS4A:
+				if (!socks4_negotiate(pool, sockd, true))
+					return false;
+				break;
+			default:
+				applog(LOG_WARNING, "Unsupported proxy type for %s:%s",
+				       pool->sockaddr_proxy_url, pool->sockaddr_proxy_port);
+				return false;
+				break;
+		}
+	}
 
 	if (!pool->sockbuf) {
 		pool->sockbuf = calloc(RBUFSIZE, 1);
@@ -1900,9 +2295,6 @@ resend:
 
 	ret = true;
 out:
-	if (val)
-		json_decref(val);
-
 	if (ret) {
 		if (!pool->stratum_url)
 			pool->stratum_url = pool->sockaddr_url;
@@ -2097,10 +2489,35 @@ void _cgsem_wait(cgsem_t *cgsem, const char *file, const char *func, const int l
 		applog(LOG_WARNING, "Failed to read errno=%d" IN_FMT_FFL, errno, file, func, line);
 }
 
-void _cgsem_destroy(cgsem_t *cgsem)
+void cgsem_destroy(cgsem_t *cgsem)
 {
 	close(cgsem->pipefd[1]);
 	close(cgsem->pipefd[0]);
+}
+
+/* This is similar to sem_timedwait but takes a millisecond value */
+int _cgsem_mswait(cgsem_t *cgsem, int ms, const char *file, const char *func, const int line)
+{
+	struct timeval timeout;
+	int ret, fd;
+	fd_set rd;
+	char buf;
+
+	fd = cgsem->pipefd[0];
+	FD_ZERO(&rd);
+	FD_SET(fd, &rd);
+	ms_to_timeval(&timeout, ms);
+	ret = select(fd + 1, &rd, NULL, NULL, &timeout);
+
+	if (ret > 0) {
+		ret = read(fd, &buf, 1);
+		return 0;
+	}
+	if (likely(!ret))
+		return ETIMEDOUT;
+	quitfrom(1, file, func, line, "Failed to sem_timedwait errno=%d cgsem=0x%p", errno, cgsem);
+	/* We don't reach here */
+	return 0;
 }
 #else
 void _cgsem_init(cgsem_t *cgsem, const char *file, const char *func, const int line)
@@ -2122,8 +2539,72 @@ void _cgsem_wait(cgsem_t *cgsem, const char *file, const char *func, const int l
 		quitfrom(1, file, func, line, "Failed to sem_wait errno=%d cgsem=0x%p", errno, cgsem);
 }
 
-void _cgsem_destroy(cgsem_t *cgsem)
+int _cgsem_mswait(cgsem_t *cgsem, int ms, const char *file, const char *func, const int line)
+{
+	struct timespec abs_timeout, ts_now;
+	struct timeval tv_now;
+	int ret;
+
+	cgtime(&tv_now);
+	timeval_to_spec(&ts_now, &tv_now);
+	ms_to_timespec(&abs_timeout, ms);
+	timeraddspec(&abs_timeout, &ts_now);
+	ret = sem_timedwait(cgsem, &abs_timeout);
+
+	if (ret) {
+		if (likely(sock_timeout()))
+			return ETIMEDOUT;
+		quitfrom(1, file, func, line, "Failed to sem_timedwait errno=%d cgsem=0x%p", errno, cgsem);
+	}
+	return 0;
+}
+
+void cgsem_destroy(cgsem_t *cgsem)
 {
 	sem_destroy(cgsem);
 }
 #endif
+
+/* Provide a completion_timeout helper function for unreliable functions that
+ * may die due to driver issues etc that time out if the function fails and
+ * can then reliably return. */
+struct cg_completion {
+	cgsem_t cgsem;
+	void (*fn)(void *fnarg);
+	void *fnarg;
+};
+
+void *completion_thread(void *arg)
+{
+	struct cg_completion *cgc = (struct cg_completion *)arg;
+
+	pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
+	cgc->fn(cgc->fnarg);
+	cgsem_post(&cgc->cgsem);
+
+	return NULL;
+}
+
+bool cg_completion_timeout(void *fn, void *fnarg, int timeout)
+{
+	struct cg_completion *cgc;
+	pthread_t pthread;
+	bool ret = false;
+
+	cgc = malloc(sizeof(struct cg_completion));
+	if (unlikely(!cgc))
+		return ret;
+	cgsem_init(&cgc->cgsem);
+	cgc->fn = fn;
+	cgc->fnarg = fnarg;
+
+	pthread_create(&pthread, NULL, completion_thread, (void *)cgc);
+
+	ret = cgsem_mswait(&cgc->cgsem, timeout);
+	if (!ret) {
+		pthread_join(pthread, NULL);
+		free(cgc);
+	} else
+		pthread_cancel(pthread);
+	return !ret;
+}

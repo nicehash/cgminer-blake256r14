@@ -20,7 +20,10 @@
 	{
 		return (errno == EAGAIN || errno == EWOULDBLOCK);
 	}
-	typedef struct timespec cgtimer_t;
+	static inline bool sock_timeout(void)
+	{
+		return (errno == ETIMEDOUT);
+	}
 #elif defined WIN32
 	#include <ws2tcpip.h>
 	#include <winsock2.h>
@@ -38,6 +41,10 @@
 	{
 		return (WSAGetLastError() == WSAEWOULDBLOCK);
 	}
+	static inline bool sock_timeout(void)
+	{
+		return (errno == WSAETIMEDOUT);
+	}
 	#ifndef SHUT_RDWR
 	#define SHUT_RDWR SD_BOTH
 	#endif
@@ -45,7 +52,6 @@
 	#ifndef in_addr_t
 	#define in_addr_t uint32_t
 	#endif
-	typedef struct timeval cgtimer_t;
 #endif
 
 #if JANSSON_MAJOR_VERSION >= 2
@@ -53,6 +59,20 @@
 #else
 #define JSON_LOADS(str, err_ptr) json_loads((str), (err_ptr))
 #endif
+
+#ifdef HAVE_LIBCURL
+typedef curl_proxytype proxytypes_t;
+#else
+typedef int proxytypes_t;
+#endif /* HAVE_LIBCURL */
+
+/* cgminer locks, a write biased variant of rwlocks */
+struct cglock {
+	pthread_mutex_t mutex;
+	pthread_rwlock_t rwlock;
+};
+
+typedef struct cglock cglock_t;
 
 /* cgminer specific unnamed semaphore implementations to cope with osx not
  * implementing them. */
@@ -64,6 +84,11 @@ struct cgsem {
 typedef struct cgsem cgsem_t;
 #else
 typedef sem_t cgsem_t;
+#endif
+#ifdef WIN32
+typedef LARGE_INTEGER cgtimer_t;
+#else
+typedef struct timespec cgtimer_t;
 #endif
 
 struct thr_info;
@@ -93,12 +118,13 @@ void cgsleep_us_r(cgtimer_t *ts_start, int64_t us);
 int cgtimer_to_ms(cgtimer_t *cgt);
 void cgtimer_sub(cgtimer_t *a, cgtimer_t *b, cgtimer_t *res);
 double us_tdiff(struct timeval *end, struct timeval *start);
+int ms_tdiff(struct timeval *end, struct timeval *start);
 double tdiff(struct timeval *end, struct timeval *start);
 bool stratum_send(struct pool *pool, char *s, ssize_t len);
 bool sock_full(struct pool *pool);
 char *recv_line(struct pool *pool);
 bool parse_method(struct pool *pool, char *s);
-bool extract_sockaddr(struct pool *pool, char *url);
+bool extract_sockaddr(char *url, char **sockaddr_url, char **sockaddr_port);
 bool auth_stratum(struct pool *pool);
 bool initiate_stratum(struct pool *pool);
 bool restart_stratum(struct pool *pool);
@@ -110,12 +136,14 @@ void RenameThread(const char* name);
 void _cgsem_init(cgsem_t *cgsem, const char *file, const char *func, const int line);
 void _cgsem_post(cgsem_t *cgsem, const char *file, const char *func, const int line);
 void _cgsem_wait(cgsem_t *cgsem, const char *file, const char *func, const int line);
-void _cgsem_destroy(cgsem_t *cgsem);
+int _cgsem_mswait(cgsem_t *cgsem, int ms, const char *file, const char *func, const int line);
+void cgsem_destroy(cgsem_t *cgsem);
+bool cg_completion_timeout(void *fn, void *fnarg, int timeout);
 
 #define cgsem_init(_sem) _cgsem_init(_sem, __FILE__, __func__, __LINE__)
 #define cgsem_post(_sem) _cgsem_post(_sem, __FILE__, __func__, __LINE__)
 #define cgsem_wait(_sem) _cgsem_wait(_sem, __FILE__, __func__, __LINE__)
-#define cgsem_destroy(_sem) _cgsem_destroy(_sem)
+#define cgsem_mswait(_sem, _timeout) _cgsem_mswait(_sem, _timeout, __FILE__, __func__, __LINE__)
 
 /* Align a size_t to 4 byte boundaries for fussy arches */
 static inline void align_len(size_t *len)

@@ -46,6 +46,9 @@ enum driver_version {
  */
 #define BFLSC_BUFSIZ (0x1000)
 
+// Should be big enough
+#define BFLSC_APPLOGSIZ 8192
+
 #define BFLSC_INFO_TIMEOUT 999
 
 #define BFLSC_DI_FIRMWARE "FIRMWARE"
@@ -56,6 +59,7 @@ enum driver_version {
 #define BFLSC_DI_DEVICESINCHAIN "DEVICES IN CHAIN"
 #define BFLSC_DI_CHAINPRESENCE "CHAIN PRESENCE MASK"
 #define BFLSC_DI_CHIPS "CHIP PARALLELIZATION"
+#define BFLSC_DI_CHIPS_PARALLEL "YES"
 
 #define FULLNONCE 0x100000000ULL
 
@@ -263,6 +267,8 @@ struct SaveString {
 #define BFLSC_ERRSIG_LEN (sizeof(BFLSC_ERRSIG)-1)
 #define BFLSC_OKQ "OK:QUEUED"
 #define BFLSC_OKQ_LEN (sizeof(BFLSC_OKQ)-1)
+#define BFLSC_INPROCESS "INPROCESS"
+#define BFLSC_INPROCESS_LEN (sizeof(BFLSC_INPROCESS)-1)
 // Followed by N=1..5
 #define BFLSC_OKQN "OK:QUEUED "
 #define BFLSC_OKQN_LEN (sizeof(BFLSC_OKQN)-1)
