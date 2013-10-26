@@ -88,10 +88,6 @@ struct strategies strategies[] = {
 	{ "Balance" },
 };
 
-#ifdef ENABLE_PROFILING
-unsigned long long _tm_total, _tm_merkle, _tm_count, _tm_txns;
-#endif
-
 static char packagename[256];
 
 bool opt_work_update;
@@ -1880,10 +1876,6 @@ static void gen_gbt_work(struct pool *pool, struct work *work)
 {
 	unsigned char *merkleroot;
 	struct timeval now;
-#ifdef ENABLE_PROFILING
-	struct timespec ts1, ts2, tse;
-	clock_gettime(CLOCK_MONOTONIC, &ts1);
-#endif
 
 	cgtime(&now);
 	if (now.tv_sec - pool->tv_lastwork.tv_sec > 60)
@@ -1893,15 +1885,7 @@ static void gen_gbt_work(struct pool *pool, struct work *work)
 	memcpy(pool->coinbase + pool->nonce2_offset, &pool->nonce2, 4);
 	pool->nonce2++;
 	cg_dwlock(&pool->gbt_lock);
-#ifdef ENABLE_PROFILING
-	clock_gettime(CLOCK_MONOTONIC, &ts2);
-#endif
 	merkleroot = __gbt_merkleroot(pool);
-#ifdef ENABLE_PROFILING
-	clock_gettime(CLOCK_MONOTONIC, &tse);
-	_tm_merkle += (tse.tv_sec * 1000000000 + tse.tv_nsec) - (ts2.tv_sec * 1000000000 + ts2.tv_nsec);
-	_tm_txns = pool->gbt_txns;
-#endif
 
 	memcpy(work->data, &pool->gbt_version, 4);
 	memcpy(work->data + 4, pool->previousblockhash, 32);
@@ -1945,11 +1929,6 @@ static void gen_gbt_work(struct pool *pool, struct work *work)
 	work->drv_rolllimit = 60;
 	calc_diff(work, 0);
 	cgtime(&work->tv_staged);
-#ifdef ENABLE_PROFILING
-	clock_gettime(CLOCK_MONOTONIC, &tse);
-	_tm_total += (tse.tv_sec * 1000000000 + tse.tv_nsec) - (ts1.tv_sec * 1000000000 + ts1.tv_nsec);
-	++_tm_count;
-#endif
 }
 
 static bool gbt_decode(struct pool *pool, json_t *res_val)
@@ -5996,10 +5975,6 @@ static void gen_stratum_work(struct pool *pool, struct work *work)
 	unsigned char merkle_root[32], merkle_sha[64];
 	uint32_t *data32, *swap32;
 	int i;
-#ifdef ENABLE_PROFILING
-	struct timespec ts1, ts2, tse;
-	clock_gettime(CLOCK_MONOTONIC, &ts1);
-#endif
 
 	cg_wlock(&pool->data_lock);
 
@@ -6011,9 +5986,6 @@ static void gen_stratum_work(struct pool *pool, struct work *work)
 	/* Downgrade to a read lock to read off the pool variables */
 	cg_dwlock(&pool->data_lock);
 
-#ifdef ENABLE_PROFILING
-	clock_gettime(CLOCK_MONOTONIC, &ts2);
-#endif
 	/* Generate merkle root */
 	gen_hash(pool->coinbase, merkle_root, pool->swork.cb_len);
 	memcpy(merkle_sha, merkle_root, 32);
@@ -6025,11 +5997,6 @@ static void gen_stratum_work(struct pool *pool, struct work *work)
 	data32 = (uint32_t *)merkle_sha;
 	swap32 = (uint32_t *)merkle_root;
 	flip32(swap32, data32);
-#ifdef ENABLE_PROFILING
-	clock_gettime(CLOCK_MONOTONIC, &tse);
-	_tm_merkle += (tse.tv_sec * 1000000000 + tse.tv_nsec) - (ts2.tv_sec * 1000000000 + ts2.tv_nsec);
-	_tm_txns = pool->swork.merkles;
-#endif
 
 	/* Copy the data template from header_bin */
 	memcpy(work->data, pool->header_bin, 128);
@@ -6073,11 +6040,6 @@ static void gen_stratum_work(struct pool *pool, struct work *work)
 	calc_diff(work, work->sdiff);
 
 	cgtime(&work->tv_staged);
-#ifdef ENABLE_PROFILING
-	clock_gettime(CLOCK_MONOTONIC, &tse);
-	_tm_total += (tse.tv_sec * 1000000000 + tse.tv_nsec) - (ts1.tv_sec * 1000000000 + ts1.tv_nsec);
-	++_tm_count;
-#endif
 }
 
 struct work *get_work(struct thr_info *thr, const int thr_id)
