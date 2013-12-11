@@ -123,6 +123,7 @@ int gpu_threads;
 #ifdef USE_SCRYPT
 bool opt_scrypt;
 #endif
+bool opt_blake256;
 #endif
 bool opt_restart = true;
 bool opt_nogpu;
@@ -1376,6 +1377,9 @@ static struct opt_table opt_config_table[] = {
 		     set_shaders, NULL, NULL,
 		     "GPU shaders per card for tuning scrypt, comma separated"),
 #endif
+	OPT_WITHOUT_ARG("--blake256",
+			opt_set_bool, &opt_blake256,
+			"Use the blake256 algorithm for mining"),
 	OPT_WITH_ARG("--sharelog",
 		     set_sharelog, NULL, NULL,
 		     "Append share log to file"),
@@ -3132,6 +3136,8 @@ static void calc_diff(struct work *work, double known)
 		d64 = truediffone;
 		if (opt_scrypt)
 			d64 *= (double)65536;
+		else if(opt_blake256)
+			d64 *= (double)16777216;
 		dcut64 = le256todouble(work->target);
 		if (unlikely(!dcut64))
 			dcut64 = 1;
@@ -3268,7 +3274,7 @@ static void __kill_work(void)
 #ifdef USE_USBUTILS
 	/* Best to get rid of it first so it doesn't
 	 * try to create any new devices */
-	if (!opt_scrypt) {
+	if (!opt_scrypt && !opt_blake256) {
 		forcelog(LOG_DEBUG, "Killing off HotPlug thread");
 		thr = &control_thr[hotplug_thr_id];
 		kill_timeout(thr);
@@ -3311,7 +3317,7 @@ static void __kill_work(void)
 #ifdef USE_USBUTILS
 	/* Release USB resources in case it's a restart
 	 * and not a QUIT */
-	if (!opt_scrypt) {
+	if (!opt_scrypt && !opt_blake256) {
 		forcelog(LOG_DEBUG, "Releasing all USB devices");
 		cg_completion_timeout(&usb_cleanup, NULL, 1000);
 
@@ -3802,6 +3808,8 @@ static void rebuild_hash(struct work *work)
 {
 	if (opt_scrypt)
 		scrypt_regenhash(work);
+	else if (opt_blake256) 
+		blake256_regenhash(work);
 	else
 		regen_hash(work);
 }
@@ -4441,6 +4449,9 @@ void write_config(FILE *fcfg)
 					break;
 				case KL_SCRYPT:
 					fprintf(fcfg, "scrypt");
+					break;
+				case KL_BLAKE256:
+					fprintf(fcfg, "blake256");
 					break;
 			}
 		}
@@ -5185,7 +5196,8 @@ static void hashmeter(int thr_id, struct timeval *diff,
 
 	local_secs = (double)total_diff.tv_sec + ((double)total_diff.tv_usec / 1000000.0);
 	decay_time(&total_rolling, local_mhashes_done / local_secs, local_secs);
-	global_hashrate = llround(total_rolling) * 1000000;
+	//global_hashrate = llround(total_rolling) * 1000000;
+	global_hashrate = ((unsigned long long)lround(total_rolling)) * 1000000;
 
 	timersub(&total_tv_end, &total_tv_start, &total_diff);
 	total_secs = (double)total_diff.tv_sec +
@@ -5945,10 +5957,7 @@ static struct work *hash_pop(void)
 
 static void gen_hash(unsigned char *data, unsigned char *hash, int len)
 {
-	unsigned char hash1[32];
-
-	sha256(data, len, hash1);
-	sha256(hash1, 32, hash);
+	sha256(data, len, hash);
 }
 
 void set_target(unsigned char *dest_target, double diff)
@@ -6178,6 +6187,9 @@ bool test_nonce(struct work *work, uint32_t nonce)
 	rebuild_nonce(work, nonce);
 	diff1targ = opt_scrypt ? 0x0000ffffUL : 0;
 
+	if	(opt_blake256)
+		diff1targ = 0x000000ffUL;
+
 	return (le32toh(*hash_32) <= diff1targ);
 }
 
@@ -6335,11 +6347,11 @@ static void hash_sole_work(struct thr_info *mythr)
 			break;
 		}
 		work->device_diff = MIN(drv->working_diff, work->work_difficulty);
-#ifdef USE_SCRYPT
+
 		/* Dynamically adjust the working diff even if the target
-		 * diff is very high to ensure we can still validate scrypt is
+		 * diff is very high to ensure we can still validate scrypt/blake is
 		 * returning shares. */
-		if (opt_scrypt) {
+		if (opt_scrypt || opt_blake256) {
 			double wu;
 
 			wu = total_diff1 / total_secs * 60;
@@ -6353,7 +6365,6 @@ static void hash_sole_work(struct thr_info *mythr)
 				drv->working_diff = work->work_difficulty;
 			set_target(work->device_target, work->device_diff);
 		}
-#endif
 
 		do {
 			cgtime(&tv_start);
@@ -8170,7 +8181,7 @@ int main(int argc, char *argv[])
 	usb_initialise();
 
 	// before device detection
-	if (!opt_scrypt) {
+	if (!opt_scrypt && !opt_blake256) {
 		cgsem_init(&usb_resource_sem);
 		usbres_thr_id = 1;
 		thr = &control_thr[usbres_thr_id];
@@ -8429,7 +8440,7 @@ begin_bench:
 		quit(1, "API thread create failed");
 
 #ifdef USE_USBUTILS
-	if (!opt_scrypt) {
+	if (!opt_scrypt && !opt_blake256) {
 		hotplug_thr_id = 6;
 		thr = &control_thr[hotplug_thr_id];
 		if (thr_info_create(thr, NULL, hotplug_thread, thr))

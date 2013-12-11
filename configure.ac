@@ -19,6 +19,12 @@ AC_CONFIG_MACRO_DIR([m4])
 AC_CONFIG_SRCDIR([cgminer.c])
 AC_CONFIG_HEADERS([config.h])
 
+AH_BOTTOM([
+#ifdef WIN32
+#include <winsock2.h>
+#endif
+])
+
 AM_INIT_AUTOMAKE([foreign subdir-objects])
 m4_ifdef([AM_SILENT_RULES], [AM_SILENT_RULES([yes])])
 AC_USE_SYSTEM_EXTENSIONS
@@ -492,6 +498,7 @@ AC_DEFINE_UNQUOTED([POCLBM_KERNNAME], ["poclbm130302"], [Filename for poclbm ker
 AC_DEFINE_UNQUOTED([DIAKGCN_KERNNAME], ["diakgcn121016"], [Filename for diakgcn kernel])
 AC_DEFINE_UNQUOTED([DIABLO_KERNNAME], ["diablo130302"], [Filename for diablo kernel])
 AC_DEFINE_UNQUOTED([SCRYPT_KERNNAME], ["scrypt130511"], [Filename for scrypt kernel])
+AC_DEFINE_UNQUOTED([BLAKE256_KERNNAME], ["blake256"], [Filename for blake256 kernel])
 
 
 AC_SUBST(OPENCL_LIBS)

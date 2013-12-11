@@ -212,6 +212,8 @@ static enum cl_kernels select_kernel(char *arg)
 	if (!strcmp(arg, "scrypt"))
 		return KL_SCRYPT;
 #endif
+	if (!strcmp(arg, "blake256"))
+		return KL_BLAKE256;
 	return KL_NONE;
 }
 
@@ -223,6 +225,8 @@ char *set_kernel(char *arg)
 
 	if (opt_scrypt)
 		return "Cannot specify a kernel with scrypt";
+	if (opt_blake256)
+		return "Cannot specify a kernel with blake256";
 	nextptr = strtok(arg, ",");
 	if (nextptr == NULL)
 		return "Invalid parameters for set kernel";
@@ -1090,6 +1094,29 @@ static cl_int queue_scrypt_kernel(_clState *clState, dev_blk_ctx *blk, __maybe_u
 }
 #endif
 
+static cl_int queue_blake256_kernel(_clState *clState, dev_blk_ctx *blk, __maybe_unused cl_uint threads)
+{
+	cl_kernel *kernel = &clState->kernel;
+	unsigned int num = 0;
+	cl_int status = 0;
+        
+	CL_SET_ARG(clState->outputBuffer);
+	CL_SET_BLKARG(ctx_a);
+	CL_SET_BLKARG(ctx_b);
+	CL_SET_BLKARG(ctx_c);
+	CL_SET_BLKARG(ctx_d);
+	CL_SET_BLKARG(ctx_e);
+	CL_SET_BLKARG(ctx_f);
+	CL_SET_BLKARG(ctx_g);
+	CL_SET_BLKARG(ctx_h);
+
+	CL_SET_BLKARG(cty_a);
+	CL_SET_BLKARG(cty_b);
+	CL_SET_BLKARG(cty_c);
+
+	return status;
+}
+
 static void set_threads_hashes(unsigned int vectors,int64_t *hashes, size_t *globalThreads,
 			       unsigned int minthreads, __maybe_unused int *intensity)
 {
@@ -1245,7 +1272,7 @@ static void opencl_detect(bool hotplug)
 	/* If opt_g_threads is not set, use default 1 thread on scrypt and
 	 * 2 for regular mining */
 	if (opt_g_threads == -1) {
-		if (opt_scrypt)
+		if (opt_scrypt || opt_blake256)
 			opt_g_threads = 1;
 		else
 			opt_g_threads = 2;
@@ -1253,6 +1280,8 @@ static void opencl_detect(bool hotplug)
 
 	if (opt_scrypt)
 		opencl_drv.max_diff = 65536;
+	else if (opt_blake256)
+		opencl_drv.max_diff = 256;
 
 	for (i = 0; i < nDevs; ++i) {
 		struct cgpu_info *cgpu;
@@ -1322,7 +1351,7 @@ static bool opencl_thread_prepare(struct thr_info *thr)
 	int virtual_gpu = cgpu->virtual_gpu;
 	int i = thr->id;
 	static bool failmessage = false;
-	int buffersize = opt_scrypt ? SCRYPT_BUFFERSIZE : BUFFERSIZE;
+	int buffersize = opt_scrypt || opt_blake256 ? SCRYPT_BUFFERSIZE : BUFFERSIZE;
 
 	if (!blank_res)
 		blank_res = calloc(buffersize, 1);
@@ -1382,6 +1411,9 @@ static bool opencl_thread_prepare(struct thr_info *thr)
 			case KL_POCLBM:
 				cgpu->kname = "poclbm";
 				break;
+			case KL_BLAKE256:
+				cgpu->kname = "blake256";
+				break;
 			default:
 				break;
 		}
@@ -1404,7 +1436,7 @@ static bool opencl_thread_init(struct thr_info *thr)
 	cl_int status = 0;
 	thrdata = calloc(1, sizeof(*thrdata));
 	thr->cgpu_data = thrdata;
-	int buffersize = opt_scrypt ? SCRYPT_BUFFERSIZE : BUFFERSIZE;
+	int buffersize = opt_scrypt || opt_blake256 ? SCRYPT_BUFFERSIZE : BUFFERSIZE;
 
 	if (!thrdata) {
 		applog(LOG_ERR, "Failed to calloc in opencl_thread_init");
@@ -1426,6 +1458,9 @@ static bool opencl_thread_init(struct thr_info *thr)
 			thrdata->queue_kernel_parameters = &queue_scrypt_kernel;
 			break;
 #endif
+		case KL_BLAKE256:
+			thrdata->queue_kernel_parameters = &queue_blake256_kernel;
+			break;
 		default:
 		case KL_DIABLO:
 			thrdata->queue_kernel_parameters = &queue_diablo_kernel;
@@ -1462,11 +1497,28 @@ static bool opencl_prepare_work(struct thr_info __maybe_unused *thr, struct work
 		work->blk.work = work;
 	else
 #endif
+	if (opt_blake256) {
+		work->blk.work = work;
+		precalc_hash_blake256(&work->blk, 0, (uint32_t *)(work->data));
+	} else
 		precalc_hash(&work->blk, (uint32_t *)(work->midstate), (uint32_t *)(work->data + 64));
 	return true;
 }
 
 extern int opt_dynamic_interval;
+
+/*
+ * Encode a length len/4 vector of (uint32_t) into a length len vector of
+ * (unsigned char) in big-endian form.  Assumes len is a multiple of 4.
+ */
+static inline void
+be32enc_vect(uint32_t *dst, const uint32_t *src, uint32_t len)
+{
+	uint32_t i;
+
+	for (i = 0; i < len; i++)
+		dst[i] = htobe32(src[i]);
+}
 
 static int64_t opencl_scanhash(struct thr_info *thr, struct work *work,
 				int64_t __maybe_unused max_nonce)
@@ -1482,8 +1534,8 @@ static int64_t opencl_scanhash(struct thr_info *thr, struct work *work,
 	size_t globalThreads[1];
 	size_t localThreads[1] = { clState->wsize };
 	int64_t hashes;
-	int found = opt_scrypt ? SCRYPT_FOUND : FOUND;
-	int buffersize = opt_scrypt ? SCRYPT_BUFFERSIZE : BUFFERSIZE;
+	int found = (opt_scrypt || opt_blake256) ? SCRYPT_FOUND : FOUND;
+	int buffersize = (opt_scrypt || opt_blake256) ? SCRYPT_BUFFERSIZE : BUFFERSIZE;
 
 	/* Windows' timer resolution is only 15ms so oversample 5x */
 	if (gpu->dynamic && (++gpu->intervals * dynamic_us) > 70000) {

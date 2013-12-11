@@ -406,6 +406,7 @@ enum cl_kernels {
 	KL_DIAKGCN,
 	KL_DIABLO,
 	KL_SCRYPT,
+	KL_BLAKE256,
 };
 
 enum dev_reason {
@@ -1175,6 +1176,7 @@ extern bool opt_scrypt;
 #else
 #define opt_scrypt (0)
 #endif
+extern bool opt_blake256;
 extern double total_secs;
 extern int mining_threads;
 extern int total_devices;
@@ -1227,9 +1229,7 @@ typedef struct {
 	cl_uint B1addK6, PreVal0addK7, W16addK16, W17addK17;
 	cl_uint zeroA, zeroB;
 	cl_uint oneA, twoA, threeA, fourA, fiveA, sixA, sevenA;
-#ifdef USE_SCRYPT
 	struct work *work;
-#endif
 } dev_blk_ctx;
 #else
 typedef struct {
@@ -1405,10 +1405,7 @@ struct work {
 	unsigned char	midstate[32];
 	unsigned char	target[32];
 	unsigned char	hash[32];
-
-#ifdef USE_SCRYPT
 	unsigned char	device_target[32];
-#endif
 	double		device_diff;
 	uint64_t	share_diff;
 

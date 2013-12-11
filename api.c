@@ -165,6 +165,7 @@ static const char *FALSESTR = "false";
 static const char *SCRYPTSTR = "scrypt";
 #endif
 static const char *SHA256STR = "sha256";
+static const char *BLAKE256STR = "blake256";
 
 static const char *DEVICECODE = ""
 #ifdef USE_AVALON
@@ -3666,6 +3667,9 @@ static void minecoin(struct io_data *io_data, __maybe_unused SOCKETTYPE c, __may
 		root = api_add_const(root, "Hash Method", SCRYPTSTR, false);
 	else
 #endif
+	if (opt_blake256)
+		root = api_add_const(root, "Hash Method", BLAKE256STR, false);
+	else
 		root = api_add_const(root, "Hash Method", SHA256STR, false);
 
 	cg_rlock(&ch_lock);

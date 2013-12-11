@@ -42,8 +42,6 @@
 #endif
 
 #ifdef WIN32
-	#include <winsock2.h>
-
 	#define SOCKETTYPE SOCKET
 	#define SOCKETFAIL(a) ((a) == SOCKET_ERROR)
 	#define INVSOCK INVALID_SOCKET

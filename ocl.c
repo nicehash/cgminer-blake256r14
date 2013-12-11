@@ -17,9 +17,7 @@
 #include <limits.h>
 #include <sys/types.h>
 
-#ifdef WIN32
-	#include <winsock2.h>
-#else
+#ifndef WIN32
 	#include <sys/socket.h>
 	#include <netinet/in.h>
 	#include <netdb.h>
@@ -393,6 +391,9 @@ _clState *initCl(unsigned int gpu, char *name, size_t nameSize)
 		if (opt_scrypt) {
 			applog(LOG_INFO, "Selecting scrypt kernel");
 			clState->chosen_kernel = KL_SCRYPT;
+		} else if (opt_blake256) {
+			applog(LOG_INFO, "Selecting blake256 kernel");
+			clState->chosen_kernel = KL_BLAKE256;
 		} else if (!strstr(name, "Tahiti") &&
 			/* Detect all 2.6 SDKs not with Tahiti and use diablo kernel */
 			(strstr(vbuff, "844.4") ||  // Linux 64 bit ATI 2.6 SDK
@@ -455,6 +456,10 @@ _clState *initCl(unsigned int gpu, char *name, size_t nameSize)
 			/* Scrypt only supports vector 1 */
 			cgpu->vwidth = 1;
 			break;
+		case KL_BLAKE256:
+			strcpy(filename, BLAKE256_KERNNAME".cl");
+			strcpy(binaryfilename, BLAKE256_KERNNAME);
+			break;
 		case KL_NONE: /* Shouldn't happen */
 		case KL_DIABLO:
 			strcpy(filename, DIABLO_KERNNAME".cl");
@@ -470,7 +475,7 @@ _clState *initCl(unsigned int gpu, char *name, size_t nameSize)
 	}
 
 	if (((clState->chosen_kernel == KL_POCLBM || clState->chosen_kernel == KL_DIABLO || clState->chosen_kernel == KL_DIAKGCN) &&
-		clState->vwidth == 1 && clState->hasOpenCL11plus) || opt_scrypt)
+		clState->vwidth == 1 && clState->hasOpenCL11plus) || opt_scrypt || opt_blake256)
 			clState->goffset = true;
 
 	if (cgpu->work_size && cgpu->work_size <= clState->max_work_size)
@@ -836,7 +841,15 @@ built:
 		clState->outputBuffer = clCreateBuffer(clState->context, CL_MEM_WRITE_ONLY, SCRYPT_BUFFERSIZE, NULL, &status);
 	} else
 #endif
-	clState->outputBuffer = clCreateBuffer(clState->context, CL_MEM_WRITE_ONLY, BUFFERSIZE, NULL, &status);
+	if (opt_blake256) {
+		clState->CLbuffer0 = clCreateBuffer(clState->context, CL_MEM_READ_ONLY, 128, NULL, &status);
+		if (status != CL_SUCCESS) {
+			applog(LOG_ERR, "Error %d: clCreateBuffer (CLbuffer0)", status);
+			return NULL;
+		}
+		clState->outputBuffer = clCreateBuffer(clState->context, CL_MEM_WRITE_ONLY, SCRYPT_BUFFERSIZE, NULL, &status);
+	} else
+		clState->outputBuffer = clCreateBuffer(clState->context, CL_MEM_WRITE_ONLY, BUFFERSIZE, NULL, &status);
 	if (status != CL_SUCCESS) {
 		applog(LOG_ERR, "Error %d: clCreateBuffer (outputBuffer)", status);
 		return NULL;
