@@ -1939,6 +1939,8 @@ bool auth_stratum(struct pool *pool)
 		applog(LOG_WARNING, "pool %d JSON stratum auth failed: %s", pool->pool_no, ss);
 		free(ss);
 
+		suspend_stratum(pool);
+
 		return ret;
 	}
 
