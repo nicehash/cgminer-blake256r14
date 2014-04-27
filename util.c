@@ -1718,8 +1718,10 @@ static bool parse_reconnect(struct pool *pool, json_t *val)
 
 	applog(LOG_NOTICE, "Reconnect requested from pool %d to %s", pool->pool_no, address);
 
-	if (!restart_stratum(pool))
+	if (!restart_stratum(pool)) {
+		pool_failed(pool);
 		return false;
+	}
 
 	return true;
 }
