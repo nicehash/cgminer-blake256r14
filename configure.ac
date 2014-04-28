@@ -422,6 +422,7 @@ if test "x$have_cgminer_sdk" = "xtrue"; then
 	fi
 	PKG_CONFIG="${PKG_CONFIG:-pkg-config} --define-variable=arch=$ARCH_DIR --define-variable=target=$target --define-variable=cgminersdkdir=$CGMINER_SDK"
 	PKG_CONFIG_PATH="$CGMINER_SDK/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+	export PKG_CONFIG_PATH
 fi
 
 AC_SUBST(LIBUSB_LIBS)
