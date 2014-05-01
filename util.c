@@ -1251,6 +1251,9 @@ static enum send_ret __stratum_send(struct pool *pool, char *s, ssize_t len)
 	SOCKETTYPE sock = pool->sock;
 	ssize_t ssent = 0;
 
+	if (opt_protocol)
+		applog(LOG_DEBUG, "SEND(pool %d): %s", pool->pool_no, s);
+
 	strcat(s, "\n");
 	len++;
 
@@ -1288,9 +1291,6 @@ static enum send_ret __stratum_send(struct pool *pool, char *s, ssize_t len)
 bool stratum_send(struct pool *pool, char *s, ssize_t len)
 {
 	enum send_ret ret = SEND_INACTIVE;
-
-	if (opt_protocol)
-		applog(LOG_DEBUG, "SEND: %s", s);
 
 	mutex_lock(&pool->stratum_lock);
 	if (pool->stratum_active)
@@ -1453,7 +1453,7 @@ out:
 	if (!sret)
 		clear_sock(pool);
 	else if (opt_protocol)
-		applog(LOG_DEBUG, "RECVD: %s", sret);
+		applog(LOG_DEBUG, "RECVD(pool %d): %s", pool->pool_no, sret);
 	return sret;
 }
 
