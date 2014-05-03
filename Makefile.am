@@ -60,6 +60,10 @@ endif
 
 endif
 
+if USE_BUILD_NUMBER
+cgminer_CPPFLAGS += -DBUILD_NUMBER=\"$(BUILD_NUMBER)\"
+endif
+
 if NEED_FPGAUTILS
 cgminer_SOURCES += fpgautils.c fpgautils.h
 endif

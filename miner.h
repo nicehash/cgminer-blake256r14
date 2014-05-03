@@ -3,6 +3,12 @@
 
 #include "config.h"
 
+#ifdef BUILD_NUMBER
+#define CGMINER_VERSION VERSION "-" BUILD_NUMBER
+#else
+#define CGMINER_VERSION VERSION
+#endif
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <sys/time.h>
