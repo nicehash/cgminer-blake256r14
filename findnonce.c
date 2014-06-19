@@ -179,7 +179,7 @@ typedef struct
   uint32_t t;
 } blake_state256;
 
-#define NB_ROUNDS32 8
+#define NB_ROUNDS32 14
 
 const uint8_t blake_sigma[][16] =
 {

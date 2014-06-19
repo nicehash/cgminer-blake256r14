@@ -436,7 +436,7 @@ static const sph_u32 CS[16] = {
 		M[0xD] = sph_dec32be_aligned(buf + 52); \
 		M[0xE] = sph_dec32be_aligned(buf + 56); \
 		M[0xF] = sph_dec32be_aligned(buf + 60); \
-		for (r = 0; r < 8; r ++) \
+		for (r = 0; r < 14; r ++) \
 			ROUND_S(r); \
 		H0 ^= S0 ^ V0 ^ V8; \
 		H1 ^= S1 ^ V1 ^ V9; \
@@ -495,6 +495,12 @@ static const sph_u32 CS[16] = {
 		ROUND_S(5); \
 		ROUND_S(6); \
 		ROUND_S(7); \
+		ROUND_S(8); \
+		ROUND_S(9); \
+		ROUND_S(0); \
+		ROUND_S(1); \
+		ROUND_S(2); \
+		ROUND_S(3); \
 		H0 ^= S0 ^ V0 ^ V8; \
 		H1 ^= S1 ^ V1 ^ V9; \
 		H2 ^= S2 ^ V2 ^ VA; \
@@ -654,7 +660,7 @@ sph_blake256_addbits_and_close(void *cc, unsigned ub, unsigned n, void *dst)
 
 /// =============================================
 
-static const uint32_t diff1targ_blake256 = 0x000000ff;
+static const uint32_t diff1targ_blake256 = 0x00000000;
 
 void blake256_regenhash(struct work *work)
 {
@@ -667,9 +673,9 @@ void blake256_regenhash(struct work *work)
         
 	applog(LOG_DEBUG, "timestamp %d", data[17]);
         
-        applog(LOG_DEBUG, "Dat0: %x %x %x %x %x %x %x %x %x %x %x %x %x %x %x %x %x %x %x %x", data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9],
-            data[10], data[11], data[12], data[13], data[14], data[15], data[16], data[17], data[18], data[19]);
-        
+	applog(LOG_DEBUG, "Dat0: %x %x %x %x %x %x %x %x %x %x %x %x %x %x %x %x %x %x %x %x", data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9],
+		data[10], data[11], data[12], data[13], data[14], data[15], data[16], data[17], data[18], data[19]);
+
     sph_blake256_context     ctx_blake;
     sph_blake256_init(&ctx_blake);
     sph_blake256 (&ctx_blake, (unsigned char *)data, 80);

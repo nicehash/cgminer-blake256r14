@@ -5956,7 +5956,10 @@ static struct work *hash_pop(void)
 
 static void gen_hash(unsigned char *data, unsigned char *hash, int len)
 {
-	sha256(data, len, hash);
+	unsigned char hash1[32];
+	
+	sha256(data, len, hash1);
+	sha256(hash1, 32, hash);
 }
 
 static void gen_hashd(unsigned char *data, unsigned char *hash, int len)
@@ -6195,7 +6198,7 @@ bool test_nonce(struct work *work, uint32_t nonce)
 	diff1targ = opt_scrypt ? 0x0000ffffUL : 0;
 
 	if	(opt_blake256)
-		diff1targ = 0x000000ffUL;
+		diff1targ = 0x00000000UL;
 
 	return (le32toh(*hash_32) <= diff1targ);
 }
