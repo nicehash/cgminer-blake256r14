@@ -3349,7 +3349,11 @@ union semun {
 #else
 static LPSECURITY_ATTRIBUTES unsec(LPSECURITY_ATTRIBUTES sec)
 {
-	FreeSid(((PSECURITY_DESCRIPTOR)(sec->lpSecurityDescriptor))->Group);
+	PSID gsid = NULL;
+	BOOL defaulted;
+	if (GetSecurityDescriptorGroup(sec->lpSecurityDescriptor, &gsid, &defaulted)) {
+		FreeSid(gsid);
+	}
 	free(sec->lpSecurityDescriptor);
 	free(sec);
 	return NULL;
